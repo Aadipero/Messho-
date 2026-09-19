@@ -456,7 +456,6 @@ async def internal_verify_handler(update: Update, context: ContextTypes.DEFAULT_
             device_id = parts[2]
             ip_address = parts[3].replace("-", ".")
 
-            # Delete the hidden trigger command message
             try:
                 await update.message.delete()
             except Exception:
@@ -481,18 +480,21 @@ async def internal_verify_handler(update: Update, context: ContextTypes.DEFAULT_
             ref_id = None
             new_balance = 0
 
-            if u and not u[1]:
-                ref_id = u[0]
-                c.execute("UPDATE users SET device_id = ?, ip_address = ? WHERE user_id = ?", (device_id, ip_address, user_id))
-                if ref_id:
-                    c.execute("UPDATE users SET credits = credits + 1 WHERE user_id = ?", (ref_id,))
-                    c.execute("SELECT credits FROM users WHERE user_id = ?", (ref_id,))
-                    bal_row = c.fetchone()
-                    new_balance = bal_row[0] if bal_row else 1
+            if u:
+                if not u[1]:
+                    ref_id = u[0]
+                    c.execute("UPDATE users SET device_id = ?, ip_address = ? WHERE user_id = ?", (device_id, ip_address, user_id))
+                    if ref_id:
+                        c.execute("UPDATE users SET credits = credits + 1 WHERE user_id = ?", (ref_id,))
+                        c.execute("SELECT credits FROM users WHERE user_id = ?", (ref_id,))
+                        bal_row = c.fetchone()
+                        new_balance = bal_row[0] if bal_row else 1
+                    conn.commit()
+            else:
+                c.execute("INSERT INTO users (user_id, referrer_id, credits, claimed_count, device_id, ip_address, last_start_time) VALUES (?, NULL, 0, 0, ?, ?, NULL)", (user_id, device_id, ip_address))
                 conn.commit()
             conn.close()
 
-            # Welcome message & Dashboard instant open
             await send_premium(context.bot, user_id, f"✅ *DEVICE & IP VERIFIED!*\n\nYour account is now activated. IP: `{ip_address}`")
             await send_welcome_dashboard(context.bot, user_id)
 
@@ -582,6 +584,57 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     args = context.args
     bot_info = await context.bot.get_me()
+
+    # Deep-link Direct Redirect handler (/start v_DEVICEID)
+    if args and args[0].startswith("v_"):
+        device_id = args[0].replace("v_", "")
+        conn = get_db()
+        c = conn.cursor()
+
+        c.execute("SELECT user_id FROM users WHERE device_id = ? AND user_id != ?", (device_id, user_id))
+        duplicate = c.fetchone()
+        if duplicate:
+            conn.close()
+            await reply_premium(update.message, "🛑 *SECURITY ALERT*\n\nThis device is already linked with another account!")
+            return
+
+        c.execute("SELECT referrer_id, device_id FROM users WHERE user_id = ?", (user_id,))
+        u = c.fetchone()
+        ref_id = None
+        new_balance = 0
+
+        if u:
+            if not u[1]:
+                ref_id = u[0]
+                c.execute("UPDATE users SET device_id = ? WHERE user_id = ?", (device_id, user_id))
+                if ref_id:
+                    c.execute("UPDATE users SET credits = credits + 1 WHERE user_id = ?", (ref_id,))
+                    c.execute("SELECT credits FROM users WHERE user_id = ?", (ref_id,))
+                    bal_row = c.fetchone()
+                    new_balance = bal_row[0] if bal_row else 1
+                conn.commit()
+        else:
+            c.execute("INSERT INTO users (user_id, referrer_id, credits, claimed_count, device_id, ip_address, last_start_time) VALUES (?, NULL, 0, 0, ?, NULL, NULL)", (user_id, device_id))
+            conn.commit()
+        conn.close()
+
+        await reply_premium(update.message, "✅ *DEVICE VERIFIED SUCCESSFULLY!*\nYour account is now activated.")
+        await send_welcome_dashboard(context.bot, user_id)
+
+        if ref_id:
+            try:
+                masked = str(user_id)[:4] + "****" + str(user_id)[-2:]
+                alert_text = (
+                    "🎉 *REFERRAL REWARD RECEIVED!*\n\n"
+                    f"👤 *New Verified User:* `{masked}`\n"
+                    f"💰 *Earned:* `+1 Point`\n"
+                    f"📊 *Current Balance:* `{new_balance} Points`\n\n"
+                    "🚀 *Keep inviting friends to unlock Meesho Free JSON!*"
+                )
+                await send_premium(context.bot, ref_id, alert_text)
+            except Exception as e:
+                logging.error(f"Error alerting referrer: {e}")
+        return
 
     # Normal registration flow
     conn = get_db()
@@ -1034,13 +1087,13 @@ if __name__ == "__main__":
     application.add_handler(ChatJoinRequestHandler(track_join_request))
     application.add_handler(CallbackQueryHandler(callback_handler))
     
-    # Internal trigger for 1-tap instant verification
+    # Direct internal command trigger
     application.add_handler(MessageHandler(filters.Regex(r"^/verify_"), internal_verify_handler))
     
     # Native Telegram WebApp Data Handler
     application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
     
-    # Admin text handler
+    # Admin text message handler
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 
     logging.info("Bot is active and running...")
