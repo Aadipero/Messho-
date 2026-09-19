@@ -26,7 +26,7 @@ PROOF_CHANNEL_URL = "https://t.me/provingc"
 # GitHub Pages Verification URL
 VERIFY_WEBAPP_URL = "https://aadipero.github.io/device-verify/"
 
-# Confetti / Party Popper Animation Effect ID (Screenshot Match)
+# Confetti / Party Popper Effect ID
 MESSAGE_CONFETTI_EFFECT_ID = "5046509860389126442"
 
 CUSTOM_EMOJI_IDS = {
@@ -255,6 +255,14 @@ def update_required_points(val: int):
     conn.commit()
     conn.close()
 
+def get_current_stock():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM meesho_files WHERE is_claimed = 0")
+    val = c.fetchone()[0]
+    conn.close()
+    return val
+
 def parse_chat_id(val: str):
     val = str(val).strip()
     if val.startswith("-") or val.isdigit():
@@ -309,13 +317,13 @@ def get_join_keyboard():
     row = []
     channels = get_all_channels()
     for ch in channels:
-        row.append(premium_button(ch["name"], None, "primary", "channel", url=ch["url"]))
+        row.append(premium_button(f"✨ {ch['name']}", None, "primary", "channel", url=ch["url"]))
         if len(row) == 2:
             keyboard.append(row)
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([premium_button("CHECK JOINED", "check_join", "success", "check")])
+    keyboard.append([premium_button("✅ CHECK JOINED", "check_join", "success", "check")])
     return InlineKeyboardMarkup(keyboard)
 
 def get_verify_keyboard(bot_username: str = ""):
@@ -330,16 +338,30 @@ def get_verify_keyboard(bot_username: str = ""):
 def get_main_keyboard():
     return InlineKeyboardMarkup([
         [
-            premium_button("My Referral Link", "ref_link", "primary", "ref_link"),
-            premium_button("My Stats & Leaderboard", "my_stats", "success", "stats"),
+            premium_button("🔗 Referral Link", "ref_link", "primary", "ref_link"),
+            premium_button("📊 My Stats", "my_stats", "primary", "stats"),
         ],
         [
-            premium_button("Withdraw Meesho JSON", "withdraw_menu", "success", "claim"),
-            premium_button("My Referrals", "my_referrals", "primary", "referrals"),
+            premium_button("🛍️ Withdraw Store", "withdraw_menu", "success", "claim"),
+            premium_button("👥 My Network", "my_referrals", "primary", "referrals"),
         ],
         [
-            premium_button("Live Proofs Channel", None, "primary", "channel", url=PROOF_CHANNEL_URL)
+            premium_button("📢 Live Proofs Channel", None, "primary", "channel", url=PROOF_CHANNEL_URL)
         ]
+    ])
+
+def get_withdraw_keyboard():
+    stock = get_current_stock()
+    pts = get_required_points()
+    
+    if stock > 0:
+        claim_btn = premium_button(f"🛍️ MEESHO FREE JSON — FREE | {stock} PCS", "confirm_claim_file", "success", "claim")
+    else:
+        claim_btn = premium_button("🛍️ MEESHO FREE JSON — OUT OF STOCK", "stock_empty_alert", "danger", "cross")
+        
+    return InlineKeyboardMarkup([
+        [claim_btn],
+        [premium_button("🔙 BACK", "back_to_main", None, "repeat")]
     ])
 
 def get_admin_keyboard():
@@ -375,7 +397,7 @@ def get_admin_channel_keyboard():
     ]
     if channels:
         for ch in channels:
-            kb.append([premium_button(f"❌ Delete {ch['name']} ({ch['type'].title()})", f"admin_del_{ch['db_id']}", "danger", "cross")])
+            kb.append([premium_button(f"❌ Delete {ch['name']}", f"admin_del_{ch['db_id']}", "danger", "cross")])
     kb.append([premium_button("🔙 Back to Admin", "admin_back_to_panel")])
     return InlineKeyboardMarkup(kb)
 
@@ -435,12 +457,16 @@ def is_device_verified(user_id: int) -> bool:
 async def send_welcome_dashboard(bot, user_id: int):
     pts = get_required_points()
     welcome_text = (
-        "✨ *WELCOME TO MEESHO AUTO SYSTEM* ✨\n\n"
-        "• *Instant Auto Dispatch:* Active 24/7\n"
-        "• *Free JSON Retrieval:* Seamless delivery\n"
-        f"• *Redeem Requirement:* `{pts} Verified Referrals`\n"
-        f"• *Live Proofs Channel:* Synchronized ({PROOF_CHANNEL})\n\n"
-        "Select an option from the menu below:"
+        "╭─ *✨ ʟɪᴠᴇ sᴛᴏʀᴇ & ᴅᴀsʜʙᴏᴀʀᴅ ✨*\n"
+        "│\n"
+        "│ • *Auto Dispatch:* Active 24/7\n"
+        "│ • *Instant Recovery:* Seamless Retrieval\n"
+        f"│ • *Redeem Target:* `{pts} Verified Referrals`\n"
+        f"│ • *Live Proofs:* Synchronized ({PROOF_CHANNEL})\n"
+        "│\n"
+        "╰───────────────────────────\n\n"
+        "🔥 *FRESH STOCK AVAILABLE!*\n"
+        "Select an option from below 👇"
     )
     return await send_premium(
         bot,
@@ -472,10 +498,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.close()
             await reply_premium(
                 update.message,
-                "🛑 *SECURITY ALERT: MULTIPLE ACCOUNTS DETECTED!*\n\n"
-                "⚠️ *This physical device is already bound to another account!*\n"
-                "• *Rule:* Only 1 account per device is permitted.\n"
-                "• *Action:* Verification cancelled."
+                "╭─ *🛑 sᴇᴄᴜʀɪᴛʏ ᴀʟᴇʀᴛ 🛑*\n"
+                "│\n"
+                "│ ⚠️ *Device Already Registered!*\n"
+                "│ • *Rule:* Only 1 account per physical device.\n"
+                "│ • *Status:* Authorization Rejected.\n"
+                "╰───────────────────────────"
             )
             return
 
@@ -499,18 +527,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
         conn.close()
 
-        # Auto-Launch Confetti Dashboard immediately without pressing /start
+        # Instant dashboard pop with effect
         await send_welcome_dashboard(context.bot, user_id)
 
         if ref_id:
             try:
                 masked = str(user_id)[:4] + "****" + str(user_id)[-2:]
                 alert_text = (
-                    "🎉 *REFERRAL REWARD RECEIVED!*\n\n"
-                    f"👤 *New Verified User:* `{masked}`\n"
-                    f"💰 *Earned:* `+1 Point`\n"
-                    f"📊 *Current Balance:* `{new_balance} Points`\n\n"
-                    "🚀 *Keep inviting friends to unlock Meesho Free JSON!*"
+                    "╭─ *🎉 ʀᴇғᴇʀʀᴀʟ ʀᴇᴡᴀʀᴅ 🎉*\n"
+                    "│\n"
+                    f"│ 👤 *Verified User:* `{masked}`\n"
+                    "│ 💰 *Reward:* `+1 Point`\n"
+                    f"│ 📊 *Balance:* `{new_balance} Points`\n"
+                    "╰───────────────────────────\n\n"
+                    "🚀 *Keep inviting friends to earn more free files!*"
                 )
                 await send_premium(context.bot, ref_id, alert_text)
             except Exception as e:
@@ -537,17 +567,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if unjoined:
         missing_names = "\n".join([f"• *{ch['name']}*" for ch in unjoined])
         text = (
-            "🛑 *CHANNEL MEMBERSHIP REQUIRED!*\n\n"
-            f"⚠️ *Join our official channels to continue:*\n{missing_names}\n\n"
-            "👉 *Tap buttons below, join, then click CHECK JOINED.*"
+            "╭─ *🛑 ᴍᴇᴍʙᴇʀsʜɪᴘ ʀᴇǫᴜɪʀᴇᴅ 🛑*\n"
+            "│\n"
+            "│ *Join our official channels to continue:*\n"
+            f"{missing_names}\n"
+            "╰───────────────────────────\n\n"
+            "👉 *Tap the buttons below and click CHECK JOINED.*"
         )
         await reply_premium(update.message, text, reply_markup=get_join_keyboard(), disable_web_page_preview=True)
         return
 
     if not is_device_verified(user_id):
         text = (
-            "🔒 *ACCOUNT VERIFICATION REQUIRED*\n\n"
-            "⚠️ *Please complete 1-tap device & IP verification:*"
+            "╭─ *🔒 ᴀᴄᴄᴏᴜɴᴛ ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ 🔒*\n"
+            "│\n"
+            "│ ⚠️ *Physical Hardware Check Required!*\n"
+            "│ Authorize your device to unlock instant claims.\n"
+            "╰───────────────────────────"
         )
         await reply_premium(update.message, text, reply_markup=get_verify_keyboard(bot_info.username))
         return
@@ -558,12 +594,16 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
     pts = get_required_points()
+    stock = get_current_stock()
     await reply_premium(
         update.message,
-        f"⚙️ *ADMIN CONTROL PANEL*\n\n"
-        f"📦 *Product:* `Meesho Free JSON`\n"
-        f"🎯 *Points Needed:* `{pts} Points`\n\n"
-        f"Select an action below:",
+        "╭─ *⚙️ ᴀᴅᴍɪɴ ᴄᴏɴᴛʀᴏʟ ᴘᴀɴᴇʟ ⚙️*\n"
+        "│\n"
+        "│ 📦 *Product:* `Meesho Free JSON`\n"
+        f"│ 🎯 *Points Needed:* `{pts} Points`\n"
+        f"│ 📊 *Stock Live:* `{stock} Files`\n"
+        "╰───────────────────────────\n\n"
+        "*Select an admin action below:*",
         reply_markup=get_admin_keyboard()
     )
 
@@ -579,17 +619,24 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not unjoined:
             await query.answer("✅ Verified Successfully!", show_alert=False)
             if not is_device_verified(user_id):
-                text = "🔒 *FINAL STEP: VERIFY YOUR ACCOUNT*\n\n*Tap below for verification:*"
+                text = (
+                    "╭─ *🔒 ᴀᴄᴄᴏᴜɴᴛ ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ 🔒*\n"
+                    "│\n"
+                    "│ ⚠️ *Final Step: Complete device authorization!*\n"
+                    "╰───────────────────────────"
+                )
                 await edit_premium(query.message, text, reply_markup=get_verify_keyboard(bot_info.username))
             else:
                 await send_welcome_dashboard(context.bot, user_id)
         else:
             names = ", ".join([ch["name"] for ch in unjoined])
-            await query.answer(f"⚠️ Action Required!\nPlease join/send request to:\n{names}", show_alert=True)
+            await query.answer(f"⚠️ Action Required!\nPlease join:\n{names}", show_alert=True)
             missing_names = "\n".join([f"• *{ch['name']}*" for ch in unjoined])
             text = (
-                "🛑 *CHANNEL MEMBERSHIP REQUIRED!*\n\n"
-                f"⚠️ *Join our official channels:*\n{missing_names}\n\n"
+                "╭─ *🛑 ᴍᴇᴍʙᴇʀsʜɪᴘ ʀᴇǫᴜɪʀᴇᴅ 🛑*\n"
+                "│\n"
+                f"{missing_names}\n"
+                "╰───────────────────────────\n\n"
                 "👉 *Tap buttons below and click CHECK JOINED.*"
             )
             try:
@@ -598,16 +645,26 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         return
 
+    if data == "stock_empty_alert":
+        await query.answer(
+            "🥺 Opps! Currently Out of Stock!\n\nRestocking updates are posted on our proof channel soon. Stay tuned! 🚀", 
+            show_alert=True
+        )
+        return
+
     await query.answer()
 
     if data == "ref_link":
         link = f"https://t.me/{bot_info.username}?start={user_id}"
         ref_text = (
-            f"🔗 *YOUR EXCLUSIVE REFERRAL LINK:*\n`{link}`\n\n"
-            f"🎁 *REWARD SCHEME:*\n"
-            f"• *1 Verified Referral* = `+1 Point`\n"
-            f"• *{pts} Points* = `1 Meesho Free JSON File`\n\n"
-            f"🚀 *Share this link in Telegram channels and groups!*"
+            "╭─ *🔗 ʏᴏᴜʀ ᴇxᴄʟᴜsɪᴠᴇ ʟɪɴᴋ 🔗*\n"
+            "│\n"
+            f"│ `{link}`\n"
+            "│\n"
+            "│ • *Per Referral:* `+1 Point`\n"
+            f"│ • *Redeem:* `{pts} Points = 1 Meesho JSON`\n"
+            "╰───────────────────────────\n\n"
+            "🚀 *Share this link in groups & channels to earn daily!*"
         )
         await reply_premium(query.message, ref_text, disable_web_page_preview=True)
 
@@ -638,18 +695,20 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if top_users:
             for idx, (top_id, count) in enumerate(top_users):
                 medal = rank_emojis[idx] if idx < len(rank_emojis) else f"{idx+1}."
-                leaderboard_str += f"{medal} *User:* `{top_id}` ➔ *{count} Refs*\n"
+                leaderboard_str += f"│ {medal} `{top_id}` ➔ *{count} Refs*\n"
         else:
-            leaderboard_str = "No referrals yet!\n"
+            leaderboard_str = "│ No top referrers yet!\n"
 
         stats_text = (
-            f"📊 *ACCOUNT OVERVIEW:*\n\n"
-            f"💰 *Available Points:* `{credits}`\n"
-            f"👥 *Verified Referrals:* `{my_refs}`\n"
-            f"🎁 *Total Files Claimed:* `{claimed}`\n\n"
-            f"🎯 *REDEEM SCHEME:*\n"
-            f"• `{pts} Points` ➔ *1 Meesho Free JSON*\n\n"
-            f"🏆 *TOP REFERRERS:*\n"
+            "╭─ *📊 ᴀᴄᴄᴏᴜɴᴛ ᴏᴠᴇʀᴠɪᴇᴡ 📊*\n"
+            "│\n"
+            f"│ 💰 *Available Balance:* `{credits} Points`\n"
+            f"│ 👥 *Verified Network:* `{my_refs} Users`\n"
+            f"│ 🎁 *Total Claimed:* `{claimed} Files`\n"
+            "│\n"
+            f"│ 🎯 *Redeem Rate:* `{pts} Points ➔ 1 Free JSON`\n"
+            "╰───────────────────────────\n\n"
+            "🏆 *ᴛᴏᴘ ʀᴇғᴇʀʀᴇʀs ʟᴇᴀᴅᴇʀʙᴏᴀʀᴅ:*\n"
             f"{leaderboard_str}"
         )
         await reply_premium(query.message, stats_text)
@@ -664,30 +723,43 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
 
         refs_text = (
-            f"👥 *YOUR REFERRAL NETWORK:*\n\n"
-            f"✅ *Verified Referrals:* `{count} Users` (+{count} Points earned)\n"
-            f"⏳ *Pending Verification:* `{pending} Users`\n\n"
-            f"💡 *Points are credited once users complete verification.*"
+            "╭─ *👥 ʏᴏᴜʀ ɴᴇᴛᴡᴏʀᴋ 👥*\n"
+            "│\n"
+            f"│ ✅ *Active Verified:* `{count} Users` (+{count} Pts)\n"
+            f"│ ⏳ *Pending Device Check:* `{pending} Users`\n"
+            "╰───────────────────────────\n\n"
+            "💡 *Points are credited immediately upon device activation.*"
         )
         await reply_premium(query.message, refs_text)
 
     elif data == "withdraw_menu":
+        stock = get_current_stock()
         withdraw_text = (
-            "🎁 *WITHDRAW MEESHO FREE JSON*\n\n"
-            f"• Cost: `{pts} Points`\n"
-            f"• Instant .txt file dispatch\n\n"
-            "Press Claim to proceed:"
+            "╭─ *🛍️ ʟɪᴠᴇ sᴛᴏʀᴇ 🛍️*\n"
+            "│\n"
+            "│ 🔥 *FRESH STOCK AVAILABLE!*\n"
+            "│ Select a voucher below 👇\n"
+            "╰───────────────────────────"
         )
-        kb = InlineKeyboardMarkup([
-            [premium_button(f"📥 Claim Meesho JSON ({pts} Pts)", "confirm_claim_file", "success", "claim")],
-            [premium_button("🔙 Back to Main", "back_to_main")]
-        ])
-        await edit_premium(query.message, withdraw_text, reply_markup=kb)
+        await edit_premium(query.message, withdraw_text, reply_markup=get_withdraw_keyboard())
 
     elif data == "back_to_main":
+        pts = get_required_points()
+        welcome_text = (
+            "╭─ *✨ ʟɪᴠᴇ sᴛᴏʀᴇ & ᴅᴀsʜʙᴏᴀʀᴅ ✨*\n"
+            "│\n"
+            "│ • *Auto Dispatch:* Active 24/7\n"
+            "│ • *Instant Recovery:* Seamless Retrieval\n"
+            f"│ • *Redeem Target:* `{pts} Verified Referrals`\n"
+            f"│ • *Live Proofs:* Synchronized ({PROOF_CHANNEL})\n"
+            "│\n"
+            "╰───────────────────────────\n\n"
+            "🔥 *FRESH STOCK AVAILABLE!*\n"
+            "Select an option from below 👇"
+        )
         await edit_premium(
             query.message,
-            "✨ *MAIN DASHBOARD*\n\nSelect an option from below:",
+            welcome_text,
             reply_markup=get_main_keyboard(),
             disable_web_page_preview=True
         )
@@ -701,7 +773,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if user_credits < pts:
             conn.close()
-            await query.answer(f"❌ Insufficient Points! You have {user_credits}, required {pts}.", show_alert=True)
+            await query.answer(f"❌ Insufficient Points! You have {user_credits}, needed {pts}.", show_alert=True)
             return
 
         c.execute("SELECT id, content FROM meesho_files WHERE is_claimed = 0 LIMIT 1")
@@ -709,17 +781,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not file_item:
             conn.close()
-            await query.answer("⚠️ Out of Stock! Adding soon.", show_alert=True)
+            await query.answer("🥺 Opps! Currently Out of Stock! Restocking soon.", show_alert=True)
             try:
-                await context.bot.send_message(chat_id=ADMIN_ID, text=f"🚨 *STOCK OVER*\nUser `{user_id}` attempted to withdraw Meesho JSON.", parse_mode="Markdown")
+                await context.bot.send_message(chat_id=ADMIN_ID, text=f"🚨 *STOCK OVER ALERT*\nUser `{user_id}` attempted to withdraw Meesho JSON.", parse_mode="Markdown")
             except Exception:
                 pass
             await reply_premium(
                 query.message, 
-                f"📦 *CURRENTLY OUT OF STOCK!*\n\nMeesho Free JSON files are exhausted right now.\nKeep an eye on the proofs channel for restock alerts!",
+                "╭─ *📦 ᴏᴜᴛ ᴏғ sᴛᴏᴄᴋ 📦*\n"
+                "│\n"
+                "│ 🥺 Meesho Free JSON files are exhausted.\n"
+                "│ Updates and restock alerts are in the proof channel!\n"
+                "╰───────────────────────────",
                 reply_markup=InlineKeyboardMarkup([
-                    [premium_button("📢 Live Proofs Channel", url=PROOF_CHANNEL_URL)],
-                    [premium_button("🔙 Back to Dashboard", "back_to_main")]
+                    [premium_button("📢 Live Proofs Channel", None, "primary", "channel", url=PROOF_CHANNEL_URL)],
+                    [premium_button("🔙 BACK", "back_to_main", None, "repeat")]
                 ]),
                 disable_web_page_preview=True
             )
@@ -736,10 +812,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_data.name = f"meesho_free_json_{user_id}_{f_id}.txt"
 
         caption = (
-            f"🎉 *CLAIM SUCCESSFUL!*\n\n"
-            f"📦 *Product:* `Meesho Free JSON`\n"
-            f"💰 *Deducted:* `{pts} Points`\n\n"
-            f"📢 *Check Proof Here:* {PROOF_CHANNEL}"
+            "╭─ *🎉 ᴅɪsᴘᴀᴛᴄʜ sᴜᴄᴄᴇssғᴜʟ 🎉*\n"
+            "│\n"
+            "│ 📦 *Item:* `Meesho Free JSON`\n"
+            f"│ 💰 *Deducted:* `{pts} Points`\n"
+            "│ ⚡ *Delivery:* Instant Auto-Dispatch\n"
+            f"│ 📢 *Proof Channel:* {PROOF_CHANNEL}\n"
+            "╰───────────────────────────"
         )
         
         await context.bot.send_document(
@@ -748,19 +827,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption=caption,
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [premium_button("📢 Check Out Proofs Here", url=PROOF_CHANNEL_URL)],
-                [premium_button("🔙 Main Menu", "back_to_main")]
+                [premium_button("📢 Check Out Proofs Here", None, "primary", "channel", url=PROOF_CHANNEL_URL)],
+                [premium_button("🔙 Main Menu", "back_to_main", None, "repeat")]
             ])
         )
 
         try:
             masked_uid = str(user_id)[:4] + "****" + str(user_id)[-2:]
             proof_msg = (
-                f"🎉 *NEW DISPATCH PROOF!*\n"
-                f"👤 *User:* `{masked_uid}`\n"
-                f"📦 *Item:* `Meesho Free JSON File`\n"
-                f"✅ *Status:* Delivered 24/7\n"
-                f"🤖 *Bot:* @{bot_info.username}"
+                "╭─ *🎉 ɴᴇᴡ ᴏʀᴅᴇʀ ᴅɪsᴘᴀᴛᴄʜ 🎉*\n"
+                "│\n"
+                f"│ 👤 *User:* `{masked_uid}`\n"
+                "│ 📦 *Item:* `Meesho Free JSON File`\n"
+                "│ ✅ *Status:* Delivered 24/7\n"
+                f"│ 🤖 *Bot:* @{bot_info.username}\n"
+                "╰───────────────────────────"
             )
             await send_premium(context.bot, PROOF_CHANNEL, proof_msg, disable_web_page_preview=True)
         except Exception:
@@ -769,12 +850,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "admin_stock":
         if user_id != ADMIN_ID:
             return
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM meesho_files WHERE is_claimed = 0")
-        stock = c.fetchone()[0]
-        conn.close()
-        await reply_premium(query.message, f"📦 *STOCK STATUS*\n\n• Available Meesho JSON Files: `{stock}`")
+        stock = get_current_stock()
+        await reply_premium(query.message, f"╭─ *📦 sᴛᴏᴄᴋ sᴛᴀᴛᴜs*\n│\n│ Available Meesho JSON Files: `{stock}`\n╰──────────────────")
 
     elif data == "admin_users":
         if user_id != ADMIN_ID:
@@ -788,18 +865,28 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c.execute("SELECT COUNT(*) FROM file_claims")
         total_claims = c.fetchone()[0]
         conn.close()
-        await reply_premium(query.message, f"👥 *USER STATS*\n\n• Total Users: `{total_users}`\n• Verified: `{verified_users}`\n• Files Claimed: `{total_claims}`")
+        await reply_premium(
+            query.message,
+            "╭─ *👥 ᴜsᴇʀ sᴛᴀᴛs 👥*\n"
+            "│\n"
+            f"│ • Total Registered: `{total_users}`\n"
+            f"│ • Verified Devices: `{verified_users}`\n"
+            f"│ • Total Dispatches: `{total_claims}`\n"
+            "╰───────────────────"
+        )
 
     elif data == "admin_bulk_files":
         if user_id != ADMIN_ID:
             return
         context.user_data["admin_action"] = "bulk_add_files"
         instructions = (
-            "➕ *BULK ADD MEESHO JSON FILES*\n\n"
-            "Paste multiple JSON contents separated by `---` line:\n\n"
-            "`{\"token\": \"abc1\"}`\n"
-            "`---`\n"
-            "`{\"token\": \"abc2\"}`\n\n"
+            "╭─ *➕ ʙᴜʟᴋ ᴀᴅᴅ ᴊsᴏɴ ғɪʟᴇs*\n"
+            "│\n"
+            "│ Paste multiple JSON contents separated by `---` line:\n"
+            "│ `{\"token\": \"abc1\"}`\n"
+            "│ `---`\n"
+            "│ `{\"token\": \"abc2\"}`\n"
+            "╰───────────────────\n\n"
             "Send the message now:"
         )
         await reply_premium(query.message, instructions)
@@ -814,10 +901,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_id != ADMIN_ID:
             return
         channels = get_all_channels()
-        info_lines = "\n".join([f"• *{ch['type'].title()}:* {ch['name']} (`{ch['id']}`)" for ch in channels]) if channels else "No channels configured."
+        info_lines = "\n".join([f"│ • {ch['name']} (`{ch['id']}`)" for ch in channels]) if channels else "│ No channels configured."
         await edit_premium(
             query.message,
-            f"📢 *CHANNEL MANAGEMENT*\n\nTotal: `{len(channels)}`\n\n{info_lines}\n\nAdd/Delete below:",
+            f"╭─ *📢 ᴄʜᴀɴɴᴇʟ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ*\n│ Total: `{len(channels)}`\n│\n{info_lines}\n╰───────────────────",
             reply_markup=get_admin_channel_keyboard(),
             disable_web_page_preview=True
         )
@@ -829,7 +916,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["admin_action"] = f"add_channel_{ch_type}"
         await reply_premium(
             query.message,
-            f"⚙️ *ADD CHANNEL*\nFormat: `Name | Chat ID | URL`\nExample: `Main | -100123456789 | https://t.me/+xyz`"
+            "⚙️ *ADD CHANNEL*\nFormat: `Name | Chat ID | URL`\nExample: `Main | -100123456789 | https://t.me/+xyz`"
         )
 
     elif data.startswith("admin_del_"):
@@ -839,10 +926,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         delete_channel_by_id(db_id)
         await query.answer("✅ Channel Deleted!", show_alert=True)
         channels = get_all_channels()
-        info_lines = "\n".join([f"• *{ch['type'].title()}:* {ch['name']} (`{ch['id']}`)" for ch in channels]) if channels else "No channels configured."
+        info_lines = "\n".join([f"│ • {ch['name']} (`{ch['id']}`)" for ch in channels]) if channels else "│ No channels configured."
         await edit_premium(
             query.message,
-            f"📢 *CHANNEL MANAGEMENT*\n\nTotal: `{len(channels)}`\n\n{info_lines}\n\nAdd/Delete below:",
+            f"╭─ *📢 ᴄʜᴀɴɴᴇʟ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ*\n│ Total: `{len(channels)}`\n│\n{info_lines}\n╰───────────────────",
             reply_markup=get_admin_channel_keyboard(),
             disable_web_page_preview=True
         )
@@ -850,9 +937,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "admin_back_to_panel":
         if user_id != ADMIN_ID:
             return
+        pts = get_required_points()
+        stock = get_current_stock()
         await edit_premium(
             query.message,
-            f"⚙️ *ADMIN CONTROL PANEL*\n\n• Meesho JSON Points: `{pts} Points`",
+            f"╭─ *⚙️ ᴀᴅᴍɪɴ ᴄᴏɴᴛʀᴏʟ ᴘᴀɴᴇʟ*\n│ • Points: `{pts}p`\n│ • Stock: `{stock} pcs`\n╰───────────────────",
             reply_markup=get_admin_keyboard()
         )
 
@@ -872,7 +961,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "admin_refresh":
         if user_id != ADMIN_ID:
             return
-        await edit_premium(query.message, f"⚙️ *ADMIN PANEL (Refreshed)*\n• Points: `{pts}p`", reply_markup=get_admin_keyboard())
+        pts = get_required_points()
+        stock = get_current_stock()
+        await edit_premium(
+            query.message, 
+            f"╭─ *⚙️ ᴀᴅᴍɪɴ ᴘᴀɴᴇʟ (ʀᴇғʀᴇsʜᴇᴅ)*\n│ • Points: `{pts}p`\n│ • Stock: `{stock} pcs`\n╰───────────────────", 
+            reply_markup=get_admin_keyboard()
+        )
 
 # ----------------- ADMIN INPUT HANDLER -----------------
 async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -895,7 +990,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 added += 1
             conn.commit()
             conn.close()
-            await reply_premium(update.message, f"✅ Successfully added `{added}` individual Meesho JSON files!", reply_markup=get_admin_keyboard())
+            await reply_premium(update.message, f"✅ Successfully added `{added}` Meesho JSON files!", reply_markup=get_admin_keyboard())
 
         elif action == "edit_points":
             if not text.isdigit() or int(text) <= 0:
@@ -945,11 +1040,11 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             sent = 0
             for (uid,) in users:
                 try:
-                    await send_premium(context.bot, uid, f"📢 *ANNOUNCEMENT:*\n\n{text}", disable_web_page_preview=True)
+                    await send_premium(context.bot, uid, f"╭─ *📢 ᴀɴɴᴏᴜɴᴄᴇᴍᴇɴᴛ 📢*\n│\n│ {text}\n╰───────────────────", disable_web_page_preview=True)
                     sent += 1
                 except Exception:
                     pass
-            await reply_premium(update.message, f"✅ Broadcast sent to `{sent}` users.", reply_markup=get_admin_keyboard())
+            await reply_premium(update.message, f"✅ Broadcast delivered to `{sent}` users.", reply_markup=get_admin_keyboard())
 
 # ----------------- MAIN RUNNER -----------------
 if __name__ == "__main__":
