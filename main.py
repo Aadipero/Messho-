@@ -306,10 +306,11 @@ def get_join_keyboard():
     keyboard.append([premium_button("CHECK JOINED", "check_join", "success", "check")])
     return InlineKeyboardMarkup(keyboard)
 
-def get_verify_keyboard():
-    # Telegram In-App Popup Window (Chrome nahi khulega)
+def get_verify_keyboard(bot_username: str):
+    # Telegram In-App Popup Window (URL ke andar bot ka username pass hoga)
+    url = f"{VERIFY_WEBAPP_URL}?bot={bot_username}"
     return InlineKeyboardMarkup([
-        [premium_button("🛡️ Verify Device Now", None, "primary", "check", web_app=WebAppInfo(url=VERIFY_WEBAPP_URL))]
+        [premium_button("🛡️ Verify Device Now", None, "primary", "check", web_app=WebAppInfo(url=url))]
     ])
 
 def get_main_keyboard():
@@ -435,87 +436,74 @@ async def send_welcome_dashboard(bot, user_id: int):
         disable_web_page_preview=True
     )
 
-# ----------------- AUTOMATIC BACKGROUND VERIFICATION HANDLER -----------------
-async def auto_verify_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-    text = update.message.text.strip()
-    
-    if text.startswith("/auto_verify_"):
-        parts = text.split("_")
-        if len(parts) >= 4:
-            user_id = int(parts[2])
-            device_id = "_".join(parts[3:])
-
-            # Background trigger message delete karein
-            try:
-                await update.message.delete()
-            except Exception:
-                pass
-
-            conn = get_db()
-            c = conn.cursor()
-
-            # Multiple Device Anti-Fraud Check
-            c.execute("SELECT user_id FROM users WHERE device_id = ? AND user_id != ?", (device_id, user_id))
-            fraud = c.fetchone()
-            if fraud:
-                conn.close()
-                await send_premium(
-                    context.bot,
-                    user_id,
-                    "🛑 *SECURITY ALERT: MULTIPLE ACCOUNTS DETECTED!*\n\n"
-                    "⚠️ *This physical device is already registered with another account!*\n"
-                    "• *Rule:* Only 1 account per device is permitted.\n"
-                    "• *Status:* Verification rejected."
-                )
-                return
-
-            c.execute("SELECT referrer_id, device_id FROM users WHERE user_id = ?", (user_id,))
-            u = c.fetchone()
-            ref_id = None
-            new_balance = 0
-
-            if u:
-                if not u[1]:
-                    ref_id = u[0]
-                    c.execute("UPDATE users SET device_id = ? WHERE user_id = ?", (device_id, user_id))
-                    if ref_id:
-                        c.execute("UPDATE users SET credits = credits + 1 WHERE user_id = ?", (ref_id,))
-                        c.execute("SELECT credits FROM users WHERE user_id = ?", (ref_id,))
-                        bal_row = c.fetchone()
-                        new_balance = bal_row[0] if bal_row else 1
-                    conn.commit()
-            else:
-                c.execute("INSERT INTO users (user_id, referrer_id, credits, claimed_count, device_id, ip_address, last_start_time) VALUES (?, NULL, 0, 0, ?, NULL, NULL)", (user_id, device_id))
-                conn.commit()
-            conn.close()
-
-            # Instant Verification & Automatic Dashboard Open (No /start needed)
-            await send_premium(context.bot, user_id, "✅ *DEVICE VERIFIED SUCCESSFULLY!*\n\nYour account is activated.")
-            await send_welcome_dashboard(context.bot, user_id)
-
-            if ref_id:
-                try:
-                    masked = str(user_id)[:4] + "****" + str(user_id)[-2:]
-                    alert_text = (
-                        "🎉 *REFERRAL REWARD RECEIVED!*\n\n"
-                        f"👤 *New Verified User:* `{masked}`\n"
-                        f"💰 *Earned:* `+1 Point`\n"
-                        f"📊 *Current Balance:* `{new_balance} Points`\n\n"
-                        "🚀 *Keep inviting friends to unlock Meesho Free JSON!*"
-                    )
-                    await send_premium(context.bot, ref_id, alert_text)
-                except Exception:
-                    pass
-
 # ----------------- COMMAND & CALLBACK HANDLERS -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_user:
         return
     user_id = update.effective_user.id
     args = context.args
+    bot_info = await context.bot.get_me()
 
+    # --- DEVICE VERIFICATION REDIRECT HANDLER ---
+    if args and args[0].startswith("v_"):
+        device_id = args[0].replace("v_", "")
+        conn = get_db()
+        c = conn.cursor()
+
+        # Check Multiple Devices (Anti-Fraud)
+        c.execute("SELECT user_id FROM users WHERE device_id = ? AND user_id != ?", (device_id, user_id))
+        fraud = c.fetchone()
+        if fraud:
+            conn.close()
+            await reply_premium(
+                update.message,
+                "🛑 *SECURITY ALERT: MULTIPLE ACCOUNTS DETECTED!*\n\n"
+                "⚠️ *This physical device is already bound to another account!*\n"
+                "• *Rule:* Only 1 account per device is permitted.\n"
+                "• *Action:* Verification cancelled."
+            )
+            return
+
+        c.execute("SELECT referrer_id, device_id FROM users WHERE user_id = ?", (user_id,))
+        u = c.fetchone()
+        ref_id = None
+        new_balance = 0
+
+        if u:
+            if not u[1]:
+                ref_id = u[0]
+                c.execute("UPDATE users SET device_id = ? WHERE user_id = ?", (device_id, user_id))
+                if ref_id:
+                    c.execute("UPDATE users SET credits = credits + 1 WHERE user_id = ?", (ref_id,))
+                    c.execute("SELECT credits FROM users WHERE user_id = ?", (ref_id,))
+                    bal_row = c.fetchone()
+                    new_balance = bal_row[0] if bal_row else 1
+                conn.commit()
+        else:
+            c.execute("INSERT INTO users (user_id, referrer_id, credits, claimed_count, device_id, ip_address, last_start_time) VALUES (?, NULL, 0, 0, ?, NULL, NULL)", (user_id, device_id))
+            conn.commit()
+        conn.close()
+
+        # Seedha welcome dashboard open ho jayega
+        await reply_premium(update.message, "✅ *DEVICE VERIFIED SUCCESSFULLY!*\n\nYour account is activated.")
+        await send_welcome_dashboard(context.bot, user_id)
+
+        if ref_id:
+            try:
+                masked = str(user_id)[:4] + "****" + str(user_id)[-2:]
+                alert_text = (
+                    "🎉 *REFERRAL REWARD RECEIVED!*\n\n"
+                    f"👤 *New Verified User:* `{masked}`\n"
+                    f"💰 *Earned:* `+1 Point`\n"
+                    f"📊 *Current Balance:* `{new_balance} Points`\n\n"
+                    "🚀 *Keep inviting friends to unlock Meesho Free JSON!*"
+                )
+                await send_premium(context.bot, ref_id, alert_text)
+            except Exception as e:
+                pass
+        return
+
+    # --- NORMAL /START FLOW ---
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
@@ -547,7 +535,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔒 *ACCOUNT VERIFICATION REQUIRED*\n\n"
             "⚠️ *Please complete 1-tap device & IP verification:*"
         )
-        await reply_premium(update.message, text, reply_markup=get_verify_keyboard())
+        await reply_premium(update.message, text, reply_markup=get_verify_keyboard(bot_info.username))
         return
 
     await send_welcome_dashboard(context.bot, user_id)
@@ -578,7 +566,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("✅ Verified Successfully!", show_alert=False)
             if not is_device_verified(user_id):
                 text = "🔒 *FINAL STEP: VERIFY YOUR ACCOUNT*\n\n*Tap below for verification:*"
-                await edit_premium(query.message, text, reply_markup=get_verify_keyboard())
+                await edit_premium(query.message, text, reply_markup=get_verify_keyboard(bot_info.username))
             else:
                 await send_welcome_dashboard(context.bot, user_id)
         else:
@@ -965,11 +953,6 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(ChatJoinRequestHandler(track_join_request))
     application.add_handler(CallbackQueryHandler(callback_handler))
-    
-    # Automatic trigger handler: User verify hote hi chat me dashboard direct open karega
-    application.add_handler(MessageHandler(filters.Regex(r"^/auto_verify_"), auto_verify_handler))
-    
-    # Admin text message handler
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 
     logging.info("Bot is active and running...")
