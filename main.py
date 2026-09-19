@@ -4,7 +4,7 @@ import sqlite3
 import logging
 from datetime import datetime
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity, WebAppInfo
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -25,135 +25,6 @@ PROOF_CHANNEL_URL = "https://t.me/provingc"
 
 # GitHub Pages Verification URL
 VERIFY_WEBAPP_URL = "https://aadipero.github.io/device-verify/"
-
-CUSTOM_EMOJI_IDS = {
-    "ref_link": "5271604874419647061",
-    "stats": "5231200819986047254",
-    "claim": "5449816553727998023",
-    "referrals": "5985525762973768278",
-    "check": "6028565819225542441",
-    "channel": "6035277294036061660",
-    "admin_add": "6034851808805918335",
-    "stock": "5294118392905623955",
-    "broadcast": "5780405967527089720",
-    "users": "5985525762973768278",
-    "edit": "5341715473882955310",
-}
-
-MESSAGE_EMOJI_IDS = {
-    "party": "5989848973974704652", "stop": "5974083768233760323", "wave": "4983292515932177130", 
-    "check": "5980930633298350051", "cross": "6158841463032519010", "warning": "5787656288934564517", 
-    "link": "5292122921035133343", "stats": "5431577498364158238", "people": "5402211308017840657", 
-    "box": "5415750994849976302", "green": "5416081784641168838", "red": "5420323339723881652", 
-    "yellow": "5789570564448326827", "gear": "5341715473882955310", "plus": "5226945370684140473", 
-    "megaphone": "5836698068061261980", "hourglass": "5451646226975955576", "repeat": "5264727218734524899", 
-    "sparkles": "5089460564141278042"
-}
-
-MESSAGE_EMOJI_MAP = {
-    "🎉": "party", "🛑": "stop", "👋": "wave", "✅": "check",
-    "❌": "cross", "⚠️": "warning", "🔗": "link", "📊": "stats",
-    "👥": "people", "📦": "box", "🟢": "green", "🔴": "red",
-    "🟡": "yellow", "⚙️": "gear", "➕": "plus", "📢": "megaphone",
-    "⏳": "hourglass", "🔁": "repeat", "✨": "sparkles"
-}
-
-def premium_button(text, callback_data=None, style=None, emoji_key=None, url=None, web_app=None):
-    kwargs = {"text": text, "callback_data": callback_data}
-    if style in ["primary", "success", "danger"]:
-        kwargs["style"] = style
-    if url is not None:
-        kwargs.pop("callback_data", None)
-        kwargs["url"] = url
-    if web_app is not None:
-        kwargs.pop("callback_data", None)
-        kwargs["web_app"] = web_app
-    emoji_id = CUSTOM_EMOJI_IDS.get(emoji_key or "")
-    if emoji_id:
-        kwargs["icon_custom_emoji_id"] = emoji_id
-    return InlineKeyboardButton(**kwargs)
-
-def parse_premium_markdown(text):
-    clean_chars = []
-    entities = []
-    in_bold, in_code = False, False
-    bold_start, code_start = 0, 0
-    
-    def utf16_len(s):
-        return len(s.encode("utf-16-le")) // 2
-
-    i = 0
-    while i < len(text):
-        ch = text[i]
-        if ch == '*' and not in_code:
-            curr_pos = utf16_len("".join(clean_chars))
-            if not in_bold:
-                in_bold, bold_start = True, curr_pos
-            else:
-                in_bold = False
-                length = curr_pos - bold_start
-                if length > 0:
-                    entities.append(MessageEntity(type=MessageEntity.BOLD, offset=bold_start, length=length))
-            i += 1
-            continue
-        elif ch == '`' and not in_bold:
-            curr_pos = utf16_len("".join(clean_chars))
-            if not in_code:
-                in_code, code_start = True, curr_pos
-            else:
-                in_code = False
-                length = curr_pos - code_start
-                if length > 0:
-                    entities.append(MessageEntity(type=MessageEntity.CODE, offset=code_start, length=length))
-            i += 1
-            continue
-        else:
-            clean_chars.append(ch)
-            i += 1
-            
-    final_text = "".join(clean_chars)
-
-    for emoji, key in sorted(MESSAGE_EMOJI_MAP.items(), key=lambda x: len(x[0]), reverse=True):
-        emoji_id = MESSAGE_EMOJI_IDS.get(key)
-        if not emoji_id:
-            continue
-        start = 0
-        while True:
-            pos = final_text.find(emoji, start)
-            if pos < 0:
-                break
-            offset = utf16_len(final_text[:pos])
-            length = utf16_len(emoji)
-            entities.append(MessageEntity(
-                type=MessageEntity.CUSTOM_EMOJI,
-                offset=offset,
-                length=length,
-                custom_emoji_id=emoji_id,
-            ))
-            start = pos + len(emoji)
-            
-    entities.sort(key=lambda e: (e.offset, e.length))
-    return final_text, entities
-
-async def reply_premium(message, text, **kwargs):
-    final_text, entities = parse_premium_markdown(text)
-    kwargs.pop("parse_mode", None)
-    return await message.reply_text(final_text, entities=entities or None, **kwargs)
-
-async def send_premium(bot, chat_id, text, **kwargs):
-    final_text, entities = parse_premium_markdown(text)
-    kwargs.pop("parse_mode", None)
-    return await bot.send_message(chat_id=chat_id, text=final_text, entities=entities or None, **kwargs)
-
-async def edit_premium(message, text, **kwargs):
-    final_text, entities = parse_premium_markdown(text)
-    kwargs.pop("parse_mode", None)
-    try:
-        return await message.edit_text(final_text, entities=entities or None, **kwargs)
-    except Exception as e:
-        if "Message is not modified" in str(e):
-            return message
-        return await message.reply_text(final_text, entities=entities or None, **kwargs)
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
@@ -297,34 +168,36 @@ def get_join_keyboard():
     row = []
     channels = get_all_channels()
     for ch in channels:
-        row.append(premium_button(ch["name"], None, "primary", "channel", url=ch["url"]))
+        row.append(InlineKeyboardButton(f"📢 {ch['name']}", url=ch["url"]))
         if len(row) == 2:
             keyboard.append(row)
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([premium_button("CHECK JOINED", "check_join", "success", "check")])
+    keyboard.append([InlineKeyboardButton("✅ CHECK JOINED", callback_data="check_join")])
     return InlineKeyboardMarkup(keyboard)
 
-def get_verify_keyboard(bot_username: str):
-    # Telegram In-App Popup Window (URL ke andar bot ka username pass hoga)
-    url = f"{VERIFY_WEBAPP_URL}?bot={bot_username}"
+def get_verify_keyboard(bot_username: str = ""):
+    clean_url = VERIFY_WEBAPP_URL
+    if bot_username:
+        sep = "&" if "?" in clean_url else "?"
+        clean_url = f"{clean_url}{sep}bot={bot_username}"
     return InlineKeyboardMarkup([
-        [premium_button("🛡️ Verify Device Now", None, "primary", "check", web_app=WebAppInfo(url=url))]
+        [InlineKeyboardButton("🛡️ Verify Device Now", web_app=WebAppInfo(url=clean_url))]
     ])
 
 def get_main_keyboard():
     return InlineKeyboardMarkup([
         [
-            premium_button("My Referral Link", "ref_link", "primary", "ref_link"),
-            premium_button("My Stats & Leaderboard", "my_stats", "success", "stats"),
+            InlineKeyboardButton("🔗 My Referral Link", callback_data="ref_link"),
+            InlineKeyboardButton("📊 My Stats", callback_data="my_stats"),
         ],
         [
-            premium_button("Withdraw Meesho JSON", "withdraw_menu", "success", "claim"),
-            premium_button("My Referrals", "my_referrals", "primary", "referrals"),
+            InlineKeyboardButton("🎁 Withdraw Meesho JSON", callback_data="withdraw_menu"),
+            InlineKeyboardButton("👥 My Referrals", callback_data="my_referrals"),
         ],
         [
-            premium_button("Live Proofs Channel", None, "primary", "channel", url=PROOF_CHANNEL_URL)
+            InlineKeyboardButton("📢 Live Proofs Channel", url=PROOF_CHANNEL_URL)
         ]
     ])
 
@@ -332,37 +205,37 @@ def get_admin_keyboard():
     pts = get_required_points()
     return InlineKeyboardMarkup([
         [
-            premium_button("➕ Add Meesho JSONs (Bulk)", "admin_bulk_files", "primary", "admin_add"),
+            InlineKeyboardButton("➕ Add Meesho JSONs (Bulk)", callback_data="admin_bulk_files"),
         ],
         [
-            premium_button(f"⚙️ Min Points ({pts}p)", "admin_edit_pts", "primary", "edit"),
-            premium_button("📦 Stock Status", "admin_stock", "success", "stock"),
+            InlineKeyboardButton(f"⚙️ Min Points ({pts}p)", callback_data="admin_edit_pts"),
+            InlineKeyboardButton("📦 Stock Status", callback_data="admin_stock"),
         ],
         [
-            premium_button("📢 Manage Channels", "admin_channel_menu", "primary", "channel"),
-            premium_button("👥 User Stats", "admin_users", "primary", "users"),
+            InlineKeyboardButton("📢 Manage Channels", callback_data="admin_channel_menu"),
+            InlineKeyboardButton("👥 User Stats", callback_data="admin_users"),
         ],
         [
-            premium_button("➕ Add User Points", "admin_add_user_points", "primary", "admin_add"),
-            premium_button("➖ Deduct User Points", "admin_deduct_user_points", "danger", "edit"),
+            InlineKeyboardButton("➕ Add User Points", callback_data="admin_add_user_points"),
+            InlineKeyboardButton("➖ Deduct User Points", callback_data="admin_deduct_user_points"),
         ],
         [
-            premium_button("📢 Broadcast Message", "admin_broadcast_prompt", "primary", "broadcast"),
-            premium_button("🔄 Refresh Panel", "admin_refresh", None, "repeat"),
+            InlineKeyboardButton("📢 Broadcast Message", callback_data="admin_broadcast_prompt"),
+            InlineKeyboardButton("🔄 Refresh Panel", callback_data="admin_refresh"),
         ]
     ])
 
 def get_admin_channel_keyboard():
     channels = get_all_channels()
     kb = [
-        [premium_button("➕ Add Public Channel", "admin_add_public", "primary", "plus")],
-        [premium_button("➕ Add Private Channel", "admin_add_private", "primary", "plus")],
-        [premium_button("➕ Add Request Channel", "admin_add_request", "primary", "plus")]
+        [InlineKeyboardButton("➕ Add Public Channel", callback_data="admin_add_public")],
+        [InlineKeyboardButton("➕ Add Private Channel", callback_data="admin_add_private")],
+        [InlineKeyboardButton("➕ Add Request Channel", callback_data="admin_add_request")]
     ]
     if channels:
         for ch in channels:
-            kb.append([premium_button(f"❌ Delete {ch['name']} ({ch['type'].title()})", f"admin_del_{ch['db_id']}", "danger", "cross")])
-    kb.append([premium_button("🔙 Back to Admin", "admin_back_to_panel")])
+            kb.append([InlineKeyboardButton(f"❌ Delete {ch['name']}", callback_data=f"admin_del_{ch['db_id']}")])
+    kb.append([InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back_to_panel")])
     return InlineKeyboardMarkup(kb)
 
 # ----------------- TRACKING & HELPERS -----------------
@@ -428,11 +301,11 @@ async def send_welcome_dashboard(bot, user_id: int):
         f"• *Live Proofs Channel:* Synchronized ({PROOF_CHANNEL})\n\n"
         "Select an option from the menu below:"
     )
-    await send_premium(
-        bot,
-        user_id,
-        welcome_text,
+    await bot.send_message(
+        chat_id=user_id,
+        text=welcome_text,
         reply_markup=get_main_keyboard(),
+        parse_mode="Markdown",
         disable_web_page_preview=True
     )
 
@@ -455,12 +328,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fraud = c.fetchone()
         if fraud:
             conn.close()
-            await reply_premium(
-                update.message,
+            await update.message.reply_text(
                 "🛑 *SECURITY ALERT: MULTIPLE ACCOUNTS DETECTED!*\n\n"
-                "⚠️ *This physical device is already bound to another account!*\n"
+                "⚠️ *This device is already bound to another account!*\n"
                 "• *Rule:* Only 1 account per device is permitted.\n"
-                "• *Action:* Verification cancelled."
+                "• *Action:* Verification cancelled.",
+                parse_mode="Markdown"
             )
             return
 
@@ -484,8 +357,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
         conn.close()
 
-        # Seedha welcome dashboard open ho jayega
-        await reply_premium(update.message, "✅ *DEVICE VERIFIED SUCCESSFULLY!*\n\nYour account is activated.")
+        # Pehle confirmation fir TURANT DASHBOARD
+        await update.message.reply_text("✅ *DEVICE VERIFIED SUCCESSFULLY!*\nYour account is now activated.", parse_mode="Markdown")
         await send_welcome_dashboard(context.bot, user_id)
 
         if ref_id:
@@ -498,8 +371,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"📊 *Current Balance:* `{new_balance} Points`\n\n"
                     "🚀 *Keep inviting friends to unlock Meesho Free JSON!*"
                 )
-                await send_premium(context.bot, ref_id, alert_text)
-            except Exception as e:
+                await context.bot.send_message(chat_id=ref_id, text=alert_text, parse_mode="Markdown")
+            except Exception:
                 pass
         return
 
@@ -527,7 +400,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⚠️ *Join our official channels to continue:*\n{missing_names}\n\n"
             "👉 *Tap buttons below, join, then click CHECK JOINED.*"
         )
-        await reply_premium(update.message, text, reply_markup=get_join_keyboard(), disable_web_page_preview=True)
+        await update.message.reply_text(text, reply_markup=get_join_keyboard(), parse_mode="Markdown", disable_web_page_preview=True)
         return
 
     if not is_device_verified(user_id):
@@ -535,7 +408,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔒 *ACCOUNT VERIFICATION REQUIRED*\n\n"
             "⚠️ *Please complete 1-tap device & IP verification:*"
         )
-        await reply_premium(update.message, text, reply_markup=get_verify_keyboard(bot_info.username))
+        await update.message.reply_text(text, reply_markup=get_verify_keyboard(bot_info.username), parse_mode="Markdown")
         return
 
     await send_welcome_dashboard(context.bot, user_id)
@@ -544,13 +417,13 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
     pts = get_required_points()
-    await reply_premium(
-        update.message,
+    await update.message.reply_text(
         f"⚙️ *ADMIN CONTROL PANEL*\n\n"
         f"📦 *Product:* `Meesho Free JSON`\n"
         f"🎯 *Points Needed:* `{pts} Points`\n\n"
         f"Select an action below:",
-        reply_markup=get_admin_keyboard()
+        reply_markup=get_admin_keyboard(),
+        parse_mode="Markdown"
     )
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -566,7 +439,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("✅ Verified Successfully!", show_alert=False)
             if not is_device_verified(user_id):
                 text = "🔒 *FINAL STEP: VERIFY YOUR ACCOUNT*\n\n*Tap below for verification:*"
-                await edit_premium(query.message, text, reply_markup=get_verify_keyboard(bot_info.username))
+                await query.message.edit_text(text, reply_markup=get_verify_keyboard(bot_info.username), parse_mode="Markdown")
             else:
                 await send_welcome_dashboard(context.bot, user_id)
         else:
@@ -579,7 +452,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "👉 *Tap buttons below and click CHECK JOINED.*"
             )
             try:
-                await edit_premium(query.message, text, reply_markup=get_join_keyboard(), disable_web_page_preview=True)
+                await query.message.edit_text(text, reply_markup=get_join_keyboard(), parse_mode="Markdown", disable_web_page_preview=True)
             except Exception:
                 pass
         return
@@ -595,7 +468,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• *{pts} Points* = `1 Meesho Free JSON File`\n\n"
             f"🚀 *Share this link in Telegram channels and groups!*"
         )
-        await reply_premium(query.message, ref_text, disable_web_page_preview=True)
+        await query.message.reply_text(ref_text, parse_mode="Markdown", disable_web_page_preview=True)
 
     elif data == "my_stats":
         conn = get_db()
@@ -638,7 +511,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🏆 *TOP REFERRERS:*\n"
             f"{leaderboard_str}"
         )
-        await reply_premium(query.message, stats_text)
+        await query.message.reply_text(stats_text, parse_mode="Markdown")
 
     elif data == "my_referrals":
         conn = get_db()
@@ -655,7 +528,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⏳ *Pending Verification:* `{pending} Users`\n\n"
             f"💡 *Points are credited once users complete verification.*"
         )
-        await reply_premium(query.message, refs_text)
+        await query.message.reply_text(refs_text, parse_mode="Markdown")
 
     elif data == "withdraw_menu":
         withdraw_text = (
@@ -665,16 +538,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Press Claim to proceed:"
         )
         kb = InlineKeyboardMarkup([
-            [premium_button(f"📥 Claim Meesho JSON ({pts} Pts)", "confirm_claim_file", "success", "claim")],
-            [premium_button("🔙 Back to Main", "back_to_main")]
+            [InlineKeyboardButton(f"📥 Claim Meesho JSON ({pts} Pts)", callback_data="confirm_claim_file")],
+            [InlineKeyboardButton("🔙 Back to Main", callback_data="back_to_main")]
         ])
-        await edit_premium(query.message, withdraw_text, reply_markup=kb)
+        await query.message.edit_text(withdraw_text, reply_markup=kb, parse_mode="Markdown")
 
     elif data == "back_to_main":
-        await edit_premium(
-            query.message,
+        await query.message.edit_text(
             "✨ *MAIN DASHBOARD*\n\nSelect an option from below:",
             reply_markup=get_main_keyboard(),
+            parse_mode="Markdown",
             disable_web_page_preview=True
         )
 
@@ -700,13 +573,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=ADMIN_ID, text=f"🚨 *STOCK OVER*\nUser `{user_id}` attempted to withdraw Meesho JSON.", parse_mode="Markdown")
             except Exception:
                 pass
-            await reply_premium(
-                query.message, 
+            await query.message.reply_text(
                 f"📦 *CURRENTLY OUT OF STOCK!*\n\nMeesho Free JSON files are exhausted right now.\nKeep an eye on the proofs channel for restock alerts!",
                 reply_markup=InlineKeyboardMarkup([
-                    [premium_button("📢 Live Proofs Channel", url=PROOF_CHANNEL_URL)],
-                    [premium_button("🔙 Back to Dashboard", "back_to_main")]
+                    [InlineKeyboardButton("📢 Live Proofs Channel", url=PROOF_CHANNEL_URL)],
+                    [InlineKeyboardButton("🔙 Back to Dashboard", callback_data="back_to_main")]
                 ]),
+                parse_mode="Markdown",
                 disable_web_page_preview=True
             )
             return
@@ -734,8 +607,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption=caption,
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [premium_button("📢 Check Out Proofs Here", url=PROOF_CHANNEL_URL)],
-                [premium_button("🔙 Main Menu", "back_to_main")]
+                [InlineKeyboardButton("📢 Check Out Proofs Here", url=PROOF_CHANNEL_URL)],
+                [InlineKeyboardButton("🔙 Main Menu", callback_data="back_to_main")]
             ])
         )
 
@@ -748,7 +621,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ *Status:* Delivered 24/7\n"
                 f"🤖 *Bot:* @{bot_info.username}"
             )
-            await send_premium(context.bot, PROOF_CHANNEL, proof_msg, disable_web_page_preview=True)
+            await context.bot.send_message(chat_id=PROOF_CHANNEL, text=proof_msg, parse_mode="Markdown", disable_web_page_preview=True)
         except Exception:
             pass
 
@@ -760,7 +633,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c.execute("SELECT COUNT(*) FROM meesho_files WHERE is_claimed = 0")
         stock = c.fetchone()[0]
         conn.close()
-        await reply_premium(query.message, f"📦 *STOCK STATUS*\n\n• Available Meesho JSON Files: `{stock}`")
+        await query.message.reply_text(f"📦 *STOCK STATUS*\n\n• Available Meesho JSON Files: `{stock}`", parse_mode="Markdown")
 
     elif data == "admin_users":
         if user_id != ADMIN_ID:
@@ -774,7 +647,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c.execute("SELECT COUNT(*) FROM file_claims")
         total_claims = c.fetchone()[0]
         conn.close()
-        await reply_premium(query.message, f"👥 *USER STATS*\n\n• Total Users: `{total_users}`\n• Verified: `{verified_users}`\n• Files Claimed: `{total_claims}`")
+        await query.message.reply_text(f"👥 *USER STATS*\n\n• Total Users: `{total_users}`\n• Verified: `{verified_users}`\n• Files Claimed: `{total_claims}`", parse_mode="Markdown")
 
     elif data == "admin_bulk_files":
         if user_id != ADMIN_ID:
@@ -788,23 +661,23 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`{\"token\": \"abc2\"}`\n\n"
             "Send the message now:"
         )
-        await reply_premium(query.message, instructions)
+        await query.message.reply_text(instructions, parse_mode="Markdown")
 
     elif data == "admin_edit_pts":
         if user_id != ADMIN_ID:
             return
         context.user_data["admin_action"] = "edit_points"
-        await reply_premium(query.message, "⚙️ Reply with the new points required for 1 Meesho JSON:")
+        await query.message.reply_text("⚙️ Reply with the new points required for 1 Meesho JSON:", parse_mode="Markdown")
 
     elif data == "admin_channel_menu":
         if user_id != ADMIN_ID:
             return
         channels = get_all_channels()
         info_lines = "\n".join([f"• *{ch['type'].title()}:* {ch['name']} (`{ch['id']}`)" for ch in channels]) if channels else "No channels configured."
-        await edit_premium(
-            query.message,
+        await query.message.edit_text(
             f"📢 *CHANNEL MANAGEMENT*\n\nTotal: `{len(channels)}`\n\n{info_lines}\n\nAdd/Delete below:",
             reply_markup=get_admin_channel_keyboard(),
+            parse_mode="Markdown",
             disable_web_page_preview=True
         )
 
@@ -813,9 +686,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         ch_type = data.replace("admin_add_", "")
         context.user_data["admin_action"] = f"add_channel_{ch_type}"
-        await reply_premium(
-            query.message,
-            f"⚙️ *ADD CHANNEL*\nFormat: `Name | Chat ID | URL`\nExample: `Main | -100123456789 | https://t.me/+xyz`"
+        await query.message.reply_text(
+            f"⚙️ *ADD CHANNEL*\nFormat: `Name | Chat ID | URL`\nExample: `Main | -100123456789 | https://t.me/+xyz`",
+            parse_mode="Markdown"
         )
 
     elif data.startswith("admin_del_"):
@@ -826,39 +699,39 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("✅ Channel Deleted!", show_alert=True)
         channels = get_all_channels()
         info_lines = "\n".join([f"• *{ch['type'].title()}:* {ch['name']} (`{ch['id']}`)" for ch in channels]) if channels else "No channels configured."
-        await edit_premium(
-            query.message,
+        await query.message.edit_text(
             f"📢 *CHANNEL MANAGEMENT*\n\nTotal: `{len(channels)}`\n\n{info_lines}\n\nAdd/Delete below:",
             reply_markup=get_admin_channel_keyboard(),
+            parse_mode="Markdown",
             disable_web_page_preview=True
         )
 
     elif data == "admin_back_to_panel":
         if user_id != ADMIN_ID:
             return
-        await edit_premium(
-            query.message,
+        await query.message.edit_text(
             f"⚙️ *ADMIN CONTROL PANEL*\n\n• Meesho JSON Points: `{pts} Points`",
-            reply_markup=get_admin_keyboard()
+            reply_markup=get_admin_keyboard(),
+            parse_mode="Markdown"
         )
 
     elif data == "admin_broadcast_prompt":
         if user_id != ADMIN_ID:
             return
         context.user_data["admin_action"] = "broadcast"
-        await reply_premium(query.message, "📢 Send the broadcast message text:")
+        await query.message.reply_text("📢 Send the broadcast message text:", parse_mode="Markdown")
 
     elif data in ["admin_add_user_points", "admin_deduct_user_points"]:
         if user_id != ADMIN_ID:
             return
         context.user_data["admin_action"] = data
         action_name = "ADD" if data == "admin_add_user_points" else "DEDUCT"
-        await reply_premium(query.message, f"👤 *{action_name} USER POINTS*\nSend format: `USER_ID AMOUNT`")
+        await query.message.reply_text(f"👤 *{action_name} USER POINTS*\nSend format: `USER_ID AMOUNT`", parse_mode="Markdown")
 
     elif data == "admin_refresh":
         if user_id != ADMIN_ID:
             return
-        await edit_premium(query.message, f"⚙️ *ADMIN PANEL (Refreshed)*\n• Points: `{pts}p`", reply_markup=get_admin_keyboard())
+        await query.message.edit_text(f"⚙️ *ADMIN PANEL (Refreshed)*\n• Points: `{pts}p`", reply_markup=get_admin_keyboard(), parse_mode="Markdown")
 
 # ----------------- ADMIN INPUT HANDLER -----------------
 async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -881,24 +754,24 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 added += 1
             conn.commit()
             conn.close()
-            await reply_premium(update.message, f"✅ Successfully added `{added}` individual Meesho JSON files!", reply_markup=get_admin_keyboard())
+            await update.message.reply_text(f"✅ Successfully added `{added}` individual Meesho JSON files!", reply_markup=get_admin_keyboard(), parse_mode="Markdown")
 
         elif action == "edit_points":
             if not text.isdigit() or int(text) <= 0:
-                await reply_premium(update.message, "❌ Invalid point value.")
+                await update.message.reply_text("❌ Invalid point value.", parse_mode="Markdown")
                 return
             val = int(text)
             update_required_points(val)
-            await reply_premium(update.message, f"✅ Updated to `{val} Points` required.", reply_markup=get_admin_keyboard())
+            await update.message.reply_text(f"✅ Updated to `{val} Points` required.", reply_markup=get_admin_keyboard(), parse_mode="Markdown")
 
         elif action.startswith("add_channel_"):
             ch_type = action.replace("add_channel_", "")
             parts = [p.strip() for p in text.split("|")]
             if len(parts) != 3:
-                await reply_premium(update.message, "❌ Use: `Name | Chat ID | URL`", reply_markup=get_admin_channel_keyboard())
+                await update.message.reply_text("❌ Use: `Name | Chat ID | URL`", reply_markup=get_admin_channel_keyboard(), parse_mode="Markdown")
                 return
             add_channel_config(ch_type, parts[0], parts[1], parts[2])
-            await reply_premium(update.message, "✅ Channel Added Successfully!", reply_markup=get_admin_keyboard())
+            await update.message.reply_text("✅ Channel Added Successfully!", reply_markup=get_admin_keyboard(), parse_mode="Markdown")
 
         elif action in ["admin_add_user_points", "admin_deduct_user_points"]:
             try:
@@ -911,16 +784,16 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 row = c.fetchone()
                 if not row:
                     conn.close()
-                    await reply_premium(update.message, f"❌ User `{target_id}` not found.")
+                    await update.message.reply_text(f"❌ User `{target_id}` not found.", parse_mode="Markdown")
                     return
                 old_p = int(row[0] or 0)
                 new_p = old_p + amount if action == "admin_add_user_points" else max(0, old_p - amount)
                 c.execute("UPDATE users SET credits = ? WHERE user_id = ?", (new_p, target_id))
                 conn.commit()
                 conn.close()
-                await reply_premium(update.message, f"✅ User `{target_id}` updated. New Balance: `{new_p}`")
+                await update.message.reply_text(f"✅ User `{target_id}` updated. New Balance: `{new_p}`", parse_mode="Markdown")
             except Exception:
-                await reply_premium(update.message, "❌ Use format: `USER_ID AMOUNT`")
+                await update.message.reply_text("❌ Use format: `USER_ID AMOUNT`", parse_mode="Markdown")
 
         elif action == "broadcast":
             conn = get_db()
@@ -931,11 +804,11 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             sent = 0
             for (uid,) in users:
                 try:
-                    await send_premium(context.bot, uid, f"📢 *ANNOUNCEMENT:*\n\n{text}", disable_web_page_preview=True)
+                    await context.bot.send_message(chat_id=uid, text=f"📢 *ANNOUNCEMENT:*\n\n{text}", parse_mode="Markdown", disable_web_page_preview=True)
                     sent += 1
                 except Exception:
                     pass
-            await reply_premium(update.message, f"✅ Broadcast sent to `{sent}` users.", reply_markup=get_admin_keyboard())
+            await update.message.reply_text(f"✅ Broadcast sent to `{sent}` users.", reply_markup=get_admin_keyboard(), parse_mode="Markdown")
 
 # ----------------- MAIN RUNNER -----------------
 if __name__ == "__main__":
