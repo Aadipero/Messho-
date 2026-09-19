@@ -17,7 +17,7 @@ from telegram.ext import (
 )
 
 # ----------------- CONFIGURATION -----------------
-BOT_TOKEN = "8824327960:AAEO_wyYbfuLRigvg78AZzOiaW0pmFg6_p4"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8824327960:AAEO_wyYbfuLRigvg78AZzOiaW0pmFg6_p4")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "8423151783"))
 
 # Proof Channel
@@ -27,7 +27,7 @@ PROOF_CHANNEL_URL = "https://t.me/provingc"
 # GitHub Pages Verification URL
 VERIFY_WEBAPP_URL = "https://aadipero.github.io/device-verify/"
 
-# Confetti / Party Popper Effect ID (Screenshot match)
+# Confetti / Party Popper Effect ID
 MESSAGE_CONFETTI_EFFECT_ID = "5046509860389126442"
 
 CUSTOM_EMOJI_IDS = {
@@ -161,9 +161,16 @@ async def edit_premium(message, text, **kwargs):
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# ----------------- DATABASE -----------------
+# ----------------- DATABASE (PERSISTENT MOUNT) -----------------
+DATA_DIR = os.getenv("DATA_DIR", "/data")
+try:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    DB_PATH = os.path.join(DATA_DIR, "bot_data.db")
+except Exception:
+    DB_PATH = "bot_data.db"
+
 def get_db():
-    conn = sqlite3.connect("bot_data.db", timeout=20.0)
+    conn = sqlite3.connect(DB_PATH, timeout=20.0)
     conn.execute("PRAGMA journal_mode=WAL;")
     return conn
 
@@ -303,9 +310,13 @@ def get_join_keyboard():
     keyboard.append([premium_button("CHECK JOINED", "check_join", "success", "check")])
     return InlineKeyboardMarkup(keyboard)
 
-def get_verify_keyboard():
+def get_verify_keyboard(bot_username: str = ""):
+    clean_url = VERIFY_WEBAPP_URL
+    if bot_username:
+        sep = "&" if "?" in clean_url else "?"
+        clean_url = f"{clean_url}{sep}bot={bot_username}"
     return InlineKeyboardMarkup([
-        [premium_button("🛡️ Verify Device Now", None, "primary", "check", web_app=WebAppInfo(url=VERIFY_WEBAPP_URL))]
+        [premium_button("🛡️ Verify Device Now", None, "primary", "check", web_app=WebAppInfo(url=clean_url))]
     ])
 
 def get_main_keyboard():
@@ -503,7 +514,46 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user_id = update.effective_user.id
     args = context.args
+    bot_info = await context.bot.get_me()
 
+    # Fallback deep-link verification support (v_...)
+    if args and args[0].startswith("v_"):
+        device_id = args[0].replace("v_", "")
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM users WHERE device_id = ? AND user_id != ?", (device_id, user_id))
+        exists = c.fetchone()
+        if exists:
+            conn.close()
+            await reply_premium(update.message, "🛑 *SECURITY ALERT*\n\nThis device is already linked with another account!")
+            return
+
+        c.execute("SELECT referrer_id, device_id FROM users WHERE user_id = ?", (user_id,))
+        u = c.fetchone()
+        ref_id = None
+        new_bal = 0
+        if u and not u[1]:
+            ref_id = u[0]
+            c.execute("UPDATE users SET device_id = ? WHERE user_id = ?", (device_id, user_id))
+            if ref_id:
+                c.execute("UPDATE users SET credits = credits + 1 WHERE user_id = ?", (ref_id,))
+                c.execute("SELECT credits FROM users WHERE user_id = ?", (ref_id,))
+                r = c.fetchone()
+                new_bal = r[0] if r else 1
+            conn.commit()
+        conn.close()
+
+        await reply_premium(update.message, "✅ *DEVICE VERIFIED SUCCESSFULLY!*")
+        await send_welcome_dashboard(context.bot, user_id)
+        if ref_id:
+            try:
+                masked = str(user_id)[:4] + "****" + str(user_id)[-2:]
+                await send_premium(context.bot, ref_id, f"🎉 *REFERRAL REWARD RECEIVED!*\n👤 User: `{masked}`\n💰 Balance: `{new_bal} Points`")
+            except Exception:
+                pass
+        return
+
+    # Normal registration flow
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
@@ -535,7 +585,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔒 *ACCOUNT VERIFICATION REQUIRED*\n\n"
             "⚠️ *Please complete 1-tap device & IP verification:*"
         )
-        await reply_premium(update.message, text, reply_markup=get_verify_keyboard())
+        await reply_premium(update.message, text, reply_markup=get_verify_keyboard(bot_info.username))
         return
 
     await send_welcome_dashboard(context.bot, user_id)
@@ -558,6 +608,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     user_id = query.from_user.id
     pts = get_required_points()
+    bot_info = await context.bot.get_me()
 
     if data == "check_join":
         unjoined = await get_unjoined_channels(user_id, context.bot)
@@ -565,7 +616,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("✅ Verified Successfully!", show_alert=False)
             if not is_device_verified(user_id):
                 text = "🔒 *FINAL STEP: VERIFY YOUR ACCOUNT*\n\n*Tap below for verification:*"
-                await edit_premium(query.message, text, reply_markup=get_verify_keyboard())
+                await edit_premium(query.message, text, reply_markup=get_verify_keyboard(bot_info.username))
             else:
                 await send_welcome_dashboard(context.bot, user_id)
         else:
@@ -586,7 +637,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if data == "ref_link":
-        bot_info = await context.bot.get_me()
         link = f"https://t.me/{bot_info.username}?start={user_id}"
         ref_text = (
             f"🔗 *YOUR EXCLUSIVE REFERRAL LINK:*\n`{link}`\n\n"
@@ -718,10 +768,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         conn.close()
 
-        # Generate text file in-memory
         file_data = io.BytesIO(f_content.encode("utf-8"))
-        file_name = f"meesho_free_json_{user_id}_{f_id}.txt"
-        file_data.name = file_name
+        file_data.name = f"meesho_free_json_{user_id}_{f_id}.txt"
 
         caption = (
             f"🎉 *CLAIM SUCCESSFUL!*\n\n"
@@ -730,7 +778,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📢 *Check Proof Here:* {PROOF_CHANNEL}"
         )
         
-        # Send text document to user
         await context.bot.send_document(
             chat_id=user_id,
             document=file_data,
@@ -742,22 +789,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
 
-        # Broadcast claim proof in Proof Channel
         try:
             masked_uid = str(user_id)[:4] + "****" + str(user_id)[-2:]
-            bot_username = (await context.bot.get_me()).username
             proof_msg = (
                 f"🎉 *NEW DISPATCH PROOF!*\n"
                 f"👤 *User:* `{masked_uid}`\n"
                 f"📦 *Item:* `Meesho Free JSON File`\n"
                 f"✅ *Status:* Delivered 24/7\n"
-                f"🤖 *Bot:* @{bot_username}"
+                f"🤖 *Bot:* @{bot_info.username}"
             )
             await send_premium(context.bot, PROOF_CHANNEL, proof_msg, disable_web_page_preview=True)
         except Exception:
             pass
 
-    # ---------------- ADMIN CALLBACKS ----------------
     elif data == "admin_stock":
         if user_id != ADMIN_ID:
             return
@@ -959,10 +1003,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(ChatJoinRequestHandler(track_join_request))
     application.add_handler(CallbackQueryHandler(callback_handler))
-    
-    # Telegram Native WebApp Data Handler
     application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
-    
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 
     logging.info("Bot is active and running...")
