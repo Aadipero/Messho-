@@ -26,6 +26,9 @@ PROOF_CHANNEL_URL = "https://t.me/provingc"
 # GitHub Pages Verification URL
 VERIFY_WEBAPP_URL = "https://aadipero.github.io/device-verify/"
 
+# Confetti / Party Popper Animation Effect ID (Screenshot Match)
+MESSAGE_CONFETTI_EFFECT_ID = "5046509860389126442"
+
 CUSTOM_EMOJI_IDS = {
     "ref_link": "5271604874419647061",
     "stats": "5231200819986047254",
@@ -141,7 +144,6 @@ async def reply_premium(message, text, **kwargs):
     try:
         return await message.reply_text(final_text, entities=entities or None, **kwargs)
     except Exception:
-        # Fallback to plain markdown if Telegram rejects custom entities
         return await message.reply_text(text, parse_mode="Markdown", **kwargs)
 
 async def send_premium(bot, chat_id, text, **kwargs):
@@ -167,7 +169,7 @@ async def edit_premium(message, text, **kwargs):
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# ----------------- DATABASE (PERSISTENT DISK) -----------------
+# ----------------- DATABASE (RAILWAY PERSISTENT DISK) -----------------
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 try:
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -445,6 +447,7 @@ async def send_welcome_dashboard(bot, user_id: int):
         user_id,
         welcome_text,
         reply_markup=get_main_keyboard(),
+        message_effect_id=MESSAGE_CONFETTI_EFFECT_ID,
         disable_web_page_preview=True
     )
 
@@ -462,7 +465,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn = get_db()
         c = conn.cursor()
 
-        # Check Multiple Devices (Anti-Fraud)
+        # Fraud Check: Multiple Accounts
         c.execute("SELECT user_id FROM users WHERE device_id = ? AND user_id != ?", (device_id, user_id))
         fraud = c.fetchone()
         if fraud:
@@ -496,8 +499,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
         conn.close()
 
-        # Instant Dashboard on Verification
-        await reply_premium(update.message, "✅ *DEVICE VERIFIED SUCCESSFULLY!*\n\nYour account is now activated.")
+        # Auto-Launch Confetti Dashboard immediately without pressing /start
         await send_welcome_dashboard(context.bot, user_id)
 
         if ref_id:
