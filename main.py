@@ -29,7 +29,11 @@ VERIFY_WEBAPP_URL = "https://aadipero.github.io/device-verify/"
 # Confetti / Party Popper Effect ID
 MESSAGE_CONFETTI_EFFECT_ID = "5046509860389126442"
 
+# ----------------- CUSTOM EMOJI IDS -----------------
+# Yahan apni 2 cute emoji IDs daal sakte hain:
 CUSTOM_EMOJI_IDS = {
+    "cute_gift": "5449816553727998023",    # <-- Apni pehli cute emoji ID yahan daalein
+    "cute_star": "5089460564141278042",    # <-- Apni doosri cute emoji ID yahan daalein
     "ref_link": "5271604874419647061",
     "stats": "5231200819986047254",
     "claim": "5449816553727998023",
@@ -311,7 +315,7 @@ def delete_channel_by_id(db_id: int):
     conn.commit()
     conn.close()
 
-# ----------------- KEYBOARDS -----------------
+# ----------------- KEYBOARDS (SMALL-CAPS STYLE) -----------------
 def get_join_keyboard():
     keyboard = []
     row = []
@@ -323,7 +327,7 @@ def get_join_keyboard():
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([premium_button("✅ CHECK JOINED", "check_join", "success", "check")])
+    keyboard.append([premium_button("✅ ᴄʜᴇᴄᴋ ᴊᴏɪɴᴇᴅ", "check_join", "success", "check")])
     return InlineKeyboardMarkup(keyboard)
 
 def get_verify_keyboard(bot_username: str = ""):
@@ -332,73 +336,72 @@ def get_verify_keyboard(bot_username: str = ""):
         sep = "&" if "?" in clean_url else "?"
         clean_url = f"{clean_url}{sep}bot={bot_username}"
     return InlineKeyboardMarkup([
-        [premium_button("🛡️ Verify Device Now", None, "primary", "check", web_app=WebAppInfo(url=clean_url))]
+        [premium_button("🛡️ ᴠᴇʀɪғʏ ᴅᴇᴠɪᴄᴇ ɴᴏᴡ", None, "primary", "check", web_app=WebAppInfo(url=clean_url))]
     ])
 
 def get_main_keyboard():
     return InlineKeyboardMarkup([
         [
-            premium_button("🔗 Referral Link", "ref_link", "primary", "ref_link"),
-            premium_button("📊 My Stats", "my_stats", "primary", "stats"),
+            premium_button("🔗 ʀᴇғᴇʀʀᴀʟ ʟɪɴᴋ", "ref_link", "primary", "ref_link"),
+            premium_button("📊 ᴍʏ sᴛᴀᴛs", "my_stats", "primary", "stats"),
         ],
         [
-            premium_button("🛍️ Withdraw Store", "withdraw_menu", "success", "claim"),
-            premium_button("👥 My Network", "my_referrals", "primary", "referrals"),
+            premium_button("🛍️ ᴡɪᴛʜᴅʀᴀᴡ sᴛᴏʀᴇ", "withdraw_menu", "success", "cute_gift"),
+            premium_button("👥 ᴍʏ ɴᴇᴛᴡᴏʀᴋ", "my_referrals", "primary", "referrals"),
         ],
         [
-            premium_button("📢 Live Proofs Channel", None, "primary", "channel", url=PROOF_CHANNEL_URL)
+            premium_button("📢 ʟɪᴠᴇ ᴘʀᴏᴏғs ᴄʜᴀɴɴᴇʟ", None, "primary", "channel", url=PROOF_CHANNEL_URL)
         ]
     ])
 
 def get_withdraw_keyboard():
     stock = get_current_stock()
-    pts = get_required_points()
     
     if stock > 0:
-        claim_btn = premium_button(f"🛍️ MEESHO FREE JSON — FREE | {stock} PCS", "confirm_claim_file", "success", "claim")
+        claim_btn = premium_button(f"🛍️ ᴍᴇᴇsʜᴏ ғʀᴇᴇ ᴊsᴏɴ — ғʀᴇᴇ | {stock} ᴘᴄs", "confirm_claim_file", "success", "cute_gift")
     else:
-        claim_btn = premium_button("🛍️ MEESHO FREE JSON — OUT OF STOCK", "stock_empty_alert", "danger", "cross")
+        claim_btn = premium_button("🛍️ ᴍᴇᴇsʜᴏ ғʀᴇᴇ ᴊsᴏɴ — ᴏᴜᴛ ᴏғ sᴛᴏᴄᴋ", "stock_empty_alert", "danger", "cross")
         
     return InlineKeyboardMarkup([
         [claim_btn],
-        [premium_button("🔙 BACK", "back_to_main", None, "repeat")]
+        [premium_button("🔙 ʙᴀᴄᴋ", "back_to_main", None, "repeat")]
     ])
 
 def get_admin_keyboard():
     pts = get_required_points()
     return InlineKeyboardMarkup([
         [
-            premium_button("➕ Add Meesho JSONs (Bulk)", "admin_bulk_files", "primary", "admin_add"),
+            premium_button("➕ ᴀᴅᴅ ᴊsᴏɴs (ʙᴜʟᴋ)", "admin_bulk_files", "primary", "admin_add"),
         ],
         [
-            premium_button(f"⚙️ Min Points ({pts}p)", "admin_edit_pts", "primary", "edit"),
-            premium_button("📦 Stock Status", "admin_stock", "success", "stock"),
+            premium_button(f"⚙️ ᴍɪɴ ᴘᴏɪɴᴛs ({pts}ᴘ)", "admin_edit_pts", "primary", "edit"),
+            premium_button("📦 sᴛᴏᴄᴋ sᴛᴀᴛᴜs", "admin_stock", "success", "stock"),
         ],
         [
-            premium_button("📢 Manage Channels", "admin_channel_menu", "primary", "channel"),
-            premium_button("👥 User Stats", "admin_users", "primary", "users"),
+            premium_button("📢 ᴍᴀɴᴀɢᴇ ᴄʜᴀɴɴᴇʟs", "admin_channel_menu", "primary", "channel"),
+            premium_button("👥 ᴜsᴇʀ sᴛᴀᴛs", "admin_users", "primary", "users"),
         ],
         [
-            premium_button("➕ Add User Points", "admin_add_user_points", "primary", "admin_add"),
-            premium_button("➖ Deduct User Points", "admin_deduct_user_points", "danger", "edit"),
+            premium_button("➕ ᴀᴅᴅ ᴜsᴇʀ ᴘᴏɪɴᴛs", "admin_add_user_points", "primary", "admin_add"),
+            premium_button("➖ ᴅᴇᴅᴜᴄᴛ ᴜsᴇʀ ᴘᴏɪɴᴛs", "admin_deduct_user_points", "danger", "edit"),
         ],
         [
-            premium_button("📢 Broadcast Message", "admin_broadcast_prompt", "primary", "broadcast"),
-            premium_button("🔄 Refresh Panel", "admin_refresh", None, "repeat"),
+            premium_button("📢 ʙʀᴏᴀᴅᴄᴀsᴛ ᴍᴇssᴀɢᴇ", "admin_broadcast_prompt", "primary", "broadcast"),
+            premium_button("🔄 ʀᴇғʀᴇsʜ ᴘᴀɴᴇʟ", "admin_refresh", None, "repeat"),
         ]
     ])
 
 def get_admin_channel_keyboard():
     channels = get_all_channels()
     kb = [
-        [premium_button("➕ Add Public Channel", "admin_add_public", "primary", "plus")],
-        [premium_button("➕ Add Private Channel", "admin_add_private", "primary", "plus")],
-        [premium_button("➕ Add Request Channel", "admin_add_request", "primary", "plus")]
+        [premium_button("➕ ᴀᴅᴅ ᴘᴜʙʟɪᴄ", "admin_add_public", "primary", "plus")],
+        [premium_button("➕ ᴀᴅᴅ ᴘʀɪᴠᴀᴛᴇ", "admin_add_private", "primary", "plus")],
+        [premium_button("➕ ᴀᴅᴅ ʀᴇǫᴜᴇsᴛ", "admin_add_request", "primary", "plus")]
     ]
     if channels:
         for ch in channels:
-            kb.append([premium_button(f"❌ Delete {ch['name']}", f"admin_del_{ch['db_id']}", "danger", "cross")])
-    kb.append([premium_button("🔙 Back to Admin", "admin_back_to_panel")])
+            kb.append([premium_button(f"❌ ᴅᴇʟᴇᴛᴇ {ch['name']}", f"admin_del_{ch['db_id']}", "danger", "cross")])
+    kb.append([premium_button("🔙 ʙᴀᴄᴋ", "admin_back_to_panel")])
     return InlineKeyboardMarkup(kb)
 
 # ----------------- TRACKING & HELPERS -----------------
@@ -733,7 +736,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_premium(query.message, refs_text)
 
     elif data == "withdraw_menu":
-        stock = get_current_stock()
         withdraw_text = (
             "╭─ *🛍️ ʟɪᴠᴇ sᴛᴏʀᴇ 🛍️*\n"
             "│\n"
@@ -794,8 +796,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "│ Updates and restock alerts are in the proof channel!\n"
                 "╰───────────────────────────",
                 reply_markup=InlineKeyboardMarkup([
-                    [premium_button("📢 Live Proofs Channel", None, "primary", "channel", url=PROOF_CHANNEL_URL)],
-                    [premium_button("🔙 BACK", "back_to_main", None, "repeat")]
+                    [premium_button("📢 ʟɪᴠᴇ ᴘʀᴏᴏғs ᴄʜᴀɴɴᴇʟ", None, "primary", "channel", url=PROOF_CHANNEL_URL)],
+                    [premium_button("🔙 ʙᴀᴄᴋ", "back_to_main", None, "repeat")]
                 ]),
                 disable_web_page_preview=True
             )
@@ -827,8 +829,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption=caption,
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [premium_button("📢 Check Out Proofs Here", None, "primary", "channel", url=PROOF_CHANNEL_URL)],
-                [premium_button("🔙 Main Menu", "back_to_main", None, "repeat")]
+                [premium_button("📢 ᴄʜᴇᴄᴋ ᴘʀᴏᴏғs ʜᴇʀᴇ", None, "primary", "channel", url=PROOF_CHANNEL_URL)],
+                [premium_button("🔙 ᴍᴀɪɴ ᴍᴇɴᴜ", "back_to_main", None, "repeat")]
             ])
         )
 
