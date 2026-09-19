@@ -2,10 +2,9 @@ import os
 import io
 import sqlite3
 import logging
-import json
 from datetime import datetime
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity, WebAppInfo
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -23,9 +22,6 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "8423151783"))
 # Proof Channel
 PROOF_CHANNEL = "@provingc"
 PROOF_CHANNEL_URL = "https://t.me/provingc"
-
-# GitHub Pages Verification URL
-VERIFY_WEBAPP_URL = "https://aadipero.github.io/device-verify/"
 
 # Confetti / Party Popper Effect ID
 MESSAGE_CONFETTI_EFFECT_ID = "5046509860389126442"
@@ -62,16 +58,13 @@ MESSAGE_EMOJI_MAP = {
     "⏳": "hourglass", "🔁": "repeat", "✨": "sparkles"
 }
 
-def premium_button(text, callback_data=None, style=None, emoji_key=None, url=None, web_app=None):
+def premium_button(text, callback_data=None, style=None, emoji_key=None, url=None):
     kwargs = {"text": text, "callback_data": callback_data}
     if style in ["primary", "success", "danger"]:
         kwargs["style"] = style
     if url is not None:
         kwargs.pop("callback_data", None)
         kwargs["url"] = url
-    if web_app is not None:
-        kwargs.pop("callback_data", None)
-        kwargs["web_app"] = web_app
     emoji_id = CUSTOM_EMOJI_IDS.get(emoji_key or "")
     if emoji_id:
         kwargs["icon_custom_emoji_id"] = emoji_id
@@ -161,7 +154,7 @@ async def edit_premium(message, text, **kwargs):
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# ----------------- DATABASE (PERSISTENT MOUNT) -----------------
+# ----------------- DATABASE (RAILWAY PERSISTENT DISK) -----------------
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 try:
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -310,13 +303,10 @@ def get_join_keyboard():
     keyboard.append([premium_button("CHECK JOINED", "check_join", "success", "check")])
     return InlineKeyboardMarkup(keyboard)
 
-def get_verify_keyboard(bot_username: str = ""):
-    clean_url = VERIFY_WEBAPP_URL
-    if bot_username:
-        sep = "&" if "?" in clean_url else "?"
-        clean_url = f"{clean_url}{sep}bot={bot_username}"
+def get_verify_keyboard():
+    # Direct Callback (Koi WebApp / Redirect lag nahi hoga)
     return InlineKeyboardMarkup([
-        [premium_button("🛡️ Verify Device Now", None, "primary", "check", web_app=WebAppInfo(url=clean_url))]
+        [premium_button("🛡️ Verify Device Now", "direct_verify_click", "primary", "check")]
     ])
 
 def get_main_keyboard():
@@ -443,200 +433,13 @@ async def send_welcome_dashboard(bot, user_id: int):
         disable_web_page_preview=True
     )
 
-# ----------------- DIRECT WEBAPP VERIFICATION HANDLER -----------------
-async def internal_verify_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-    text = update.message.text.strip()
-    
-    if text.startswith("/verify_"):
-        parts = text.split("_")
-        if len(parts) >= 4:
-            user_id = int(parts[1])
-            device_id = parts[2]
-            ip_address = parts[3].replace("-", ".")
-
-            try:
-                await update.message.delete()
-            except Exception:
-                pass
-
-            conn = get_db()
-            c = conn.cursor()
-
-            # Anti-fraud check
-            c.execute(
-                "SELECT user_id FROM users WHERE (device_id = ? OR (ip_address = ? AND ip_address IS NOT NULL)) AND user_id != ?", 
-                (device_id, ip_address, user_id)
-            )
-            fraud = c.fetchone()
-            if fraud:
-                conn.close()
-                await send_premium(context.bot, user_id, "🛑 *SECURITY ALERT*\n\nThis device or IP is already registered with another account!")
-                return
-
-            c.execute("SELECT referrer_id, device_id FROM users WHERE user_id = ?", (user_id,))
-            u = c.fetchone()
-            ref_id = None
-            new_balance = 0
-
-            if u:
-                if not u[1]:
-                    ref_id = u[0]
-                    c.execute("UPDATE users SET device_id = ?, ip_address = ? WHERE user_id = ?", (device_id, ip_address, user_id))
-                    if ref_id:
-                        c.execute("UPDATE users SET credits = credits + 1 WHERE user_id = ?", (ref_id,))
-                        c.execute("SELECT credits FROM users WHERE user_id = ?", (ref_id,))
-                        bal_row = c.fetchone()
-                        new_balance = bal_row[0] if bal_row else 1
-                    conn.commit()
-            else:
-                c.execute("INSERT INTO users (user_id, referrer_id, credits, claimed_count, device_id, ip_address, last_start_time) VALUES (?, NULL, 0, 0, ?, ?, NULL)", (user_id, device_id, ip_address))
-                conn.commit()
-            conn.close()
-
-            await send_premium(context.bot, user_id, f"✅ *DEVICE & IP VERIFIED!*\n\nYour account is now activated. IP: `{ip_address}`")
-            await send_welcome_dashboard(context.bot, user_id)
-
-            if ref_id:
-                try:
-                    masked = str(user_id)[:4] + "****" + str(user_id)[-2:]
-                    alert = (
-                        "🎉 *REFERRAL REWARD RECEIVED!*\n\n"
-                        f"👤 *New Verified User:* `{masked}`\n"
-                        f"💰 *Earned:* `+1 Point`\n"
-                        f"📊 *Current Balance:* `{new_balance} Points`\n\n"
-                        "🚀 *Keep inviting friends to unlock Meesho Free JSON!*"
-                    )
-                    await send_premium(context.bot, ref_id, alert)
-                except Exception:
-                    pass
-
-# ----------------- WEBAPP DATA RECEIVER -----------------
-async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.web_app_data:
-        return
-    
-    sender_id = update.effective_user.id
-    raw_json = update.message.web_app_data.data
-
-    try:
-        data = json.loads(raw_json)
-    except Exception:
-        return
-
-    if data.get("action") == "device_ip_verified":
-        device_id = data.get("device_id")
-        user_ip = data.get("ip")
-
-        conn = get_db()
-        c = conn.cursor()
-
-        c.execute(
-            "SELECT user_id FROM users WHERE (device_id = ? OR (ip_address = ? AND ip_address IS NOT NULL)) AND user_id != ?", 
-            (device_id, user_ip, sender_id)
-        )
-        existing_fraud = c.fetchone()
-
-        if existing_fraud:
-            conn.close()
-            await reply_premium(update.message, "🛑 *SECURITY ALERT*\n\nThis device or IP address is already registered with another account!")
-            return
-
-        c.execute("SELECT referrer_id, device_id FROM users WHERE user_id = ?", (sender_id,))
-        u = c.fetchone()
-
-        referrer_id = None
-        new_balance = 0
-
-        if u and not u[1]:
-            referrer_id = u[0]
-            c.execute("UPDATE users SET device_id = ?, ip_address = ? WHERE user_id = ?", (device_id, user_ip, sender_id))
-            if referrer_id:
-                c.execute("UPDATE users SET credits = credits + 1 WHERE user_id = ?", (referrer_id,))
-                c.execute("SELECT credits FROM users WHERE user_id = ?", (referrer_id,))
-                bal_row = c.fetchone()
-                new_balance = bal_row[0] if bal_row else 1
-            conn.commit()
-        conn.close()
-
-        await reply_premium(update.message, f"✅ *DEVICE & IP VERIFIED!*\n\nYour account is now activated. IP: `{user_ip}`")
-        await send_welcome_dashboard(context.bot, sender_id)
-
-        if referrer_id:
-            try:
-                masked_new_user = str(sender_id)[:4] + "****" + str(sender_id)[-2:]
-                alert_text = (
-                    "🎉 *REFERRAL REWARD RECEIVED!*\n\n"
-                    f"👤 *New Verified User:* `{masked_new_user}`\n"
-                    f"💰 *Earned:* `+1 Point`\n"
-                    f"📊 *Current Balance:* `{new_balance} Points`\n\n"
-                    "🚀 *Keep inviting friends to unlock Meesho Free JSON!*"
-                )
-                await send_premium(context.bot, referrer_id, alert_text)
-            except Exception as e:
-                logging.error(f"Error alerting referrer: {e}")
-
 # ----------------- COMMAND & CALLBACK HANDLERS -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_user:
         return
     user_id = update.effective_user.id
     args = context.args
-    bot_info = await context.bot.get_me()
 
-    # Deep-link Direct Redirect handler (/start v_DEVICEID)
-    if args and args[0].startswith("v_"):
-        device_id = args[0].replace("v_", "")
-        conn = get_db()
-        c = conn.cursor()
-
-        c.execute("SELECT user_id FROM users WHERE device_id = ? AND user_id != ?", (device_id, user_id))
-        duplicate = c.fetchone()
-        if duplicate:
-            conn.close()
-            await reply_premium(update.message, "🛑 *SECURITY ALERT*\n\nThis device is already linked with another account!")
-            return
-
-        c.execute("SELECT referrer_id, device_id FROM users WHERE user_id = ?", (user_id,))
-        u = c.fetchone()
-        ref_id = None
-        new_balance = 0
-
-        if u:
-            if not u[1]:
-                ref_id = u[0]
-                c.execute("UPDATE users SET device_id = ? WHERE user_id = ?", (device_id, user_id))
-                if ref_id:
-                    c.execute("UPDATE users SET credits = credits + 1 WHERE user_id = ?", (ref_id,))
-                    c.execute("SELECT credits FROM users WHERE user_id = ?", (ref_id,))
-                    bal_row = c.fetchone()
-                    new_balance = bal_row[0] if bal_row else 1
-                conn.commit()
-        else:
-            c.execute("INSERT INTO users (user_id, referrer_id, credits, claimed_count, device_id, ip_address, last_start_time) VALUES (?, NULL, 0, 0, ?, NULL, NULL)", (user_id, device_id))
-            conn.commit()
-        conn.close()
-
-        await reply_premium(update.message, "✅ *DEVICE VERIFIED SUCCESSFULLY!*\nYour account is now activated.")
-        await send_welcome_dashboard(context.bot, user_id)
-
-        if ref_id:
-            try:
-                masked = str(user_id)[:4] + "****" + str(user_id)[-2:]
-                alert_text = (
-                    "🎉 *REFERRAL REWARD RECEIVED!*\n\n"
-                    f"👤 *New Verified User:* `{masked}`\n"
-                    f"💰 *Earned:* `+1 Point`\n"
-                    f"📊 *Current Balance:* `{new_balance} Points`\n\n"
-                    "🚀 *Keep inviting friends to unlock Meesho Free JSON!*"
-                )
-                await send_premium(context.bot, ref_id, alert_text)
-            except Exception as e:
-                logging.error(f"Error alerting referrer: {e}")
-        return
-
-    # Normal registration flow
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
@@ -668,7 +471,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔒 *ACCOUNT VERIFICATION REQUIRED*\n\n"
             "⚠️ *Please complete 1-tap device & IP verification:*"
         )
-        await reply_premium(update.message, text, reply_markup=get_verify_keyboard(bot_info.username))
+        await reply_premium(update.message, text, reply_markup=get_verify_keyboard())
         return
 
     await send_welcome_dashboard(context.bot, user_id)
@@ -693,13 +496,63 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pts = get_required_points()
     bot_info = await context.bot.get_me()
 
+    # 1-TAP INSTANT VERIFICATION BUTTON
+    if data == "direct_verify_click":
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT referrer_id, device_id FROM users WHERE user_id = ?", (user_id,))
+        u = c.fetchone()
+        
+        ref_id = None
+        new_balance = 0
+        device_id = f"DEVICE_{user_id}"
+
+        if u:
+            if not u[1]:
+                ref_id = u[0]
+                c.execute("UPDATE users SET device_id = ? WHERE user_id = ?", (device_id, user_id))
+                if ref_id:
+                    c.execute("UPDATE users SET credits = credits + 1 WHERE user_id = ?", (ref_id,))
+                    c.execute("SELECT credits FROM users WHERE user_id = ?", (ref_id,))
+                    bal_row = c.fetchone()
+                    new_balance = bal_row[0] if bal_row else 1
+                conn.commit()
+        else:
+            c.execute("INSERT INTO users (user_id, referrer_id, credits, claimed_count, device_id, ip_address, last_start_time) VALUES (?, NULL, 0, 0, ?, NULL, NULL)", (user_id, device_id))
+            conn.commit()
+        conn.close()
+
+        await query.answer("✅ Verification Successful!", show_alert=False)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+        await send_premium(context.bot, user_id, "✅ *DEVICE & ACCOUNT VERIFIED!*\nYour account is activated.")
+        await send_welcome_dashboard(context.bot, user_id)
+
+        if ref_id:
+            try:
+                masked = str(user_id)[:4] + "****" + str(user_id)[-2:]
+                alert_text = (
+                    "🎉 *REFERRAL REWARD RECEIVED!*\n\n"
+                    f"👤 *New Verified User:* `{masked}`\n"
+                    f"💰 *Earned:* `+1 Point`\n"
+                    f"📊 *Current Balance:* `{new_balance} Points`\n\n"
+                    "🚀 *Keep inviting friends to unlock Meesho Free JSON!*"
+                )
+                await send_premium(context.bot, ref_id, alert_text)
+            except Exception as e:
+                pass
+        return
+
     if data == "check_join":
         unjoined = await get_unjoined_channels(user_id, context.bot)
         if not unjoined:
             await query.answer("✅ Verified Successfully!", show_alert=False)
             if not is_device_verified(user_id):
                 text = "🔒 *FINAL STEP: VERIFY YOUR ACCOUNT*\n\n*Tap below for verification:*"
-                await edit_premium(query.message, text, reply_markup=get_verify_keyboard(bot_info.username))
+                await edit_premium(query.message, text, reply_markup=get_verify_keyboard())
             else:
                 await send_welcome_dashboard(context.bot, user_id)
         else:
@@ -786,7 +639,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👥 *YOUR REFERRAL NETWORK:*\n\n"
             f"✅ *Verified Referrals:* `{count} Users` (+{count} Points earned)\n"
             f"⏳ *Pending Verification:* `{pending} Users`\n\n"
-            f"💡 *Points are credited once users complete device check.*"
+            f"💡 *Points are credited once users complete verification.*"
         )
         await reply_premium(query.message, refs_text)
 
@@ -1086,12 +939,6 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(ChatJoinRequestHandler(track_join_request))
     application.add_handler(CallbackQueryHandler(callback_handler))
-    
-    # Direct internal command trigger
-    application.add_handler(MessageHandler(filters.Regex(r"^/verify_"), internal_verify_handler))
-    
-    # Native Telegram WebApp Data Handler
-    application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
     
     # Admin text message handler
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
