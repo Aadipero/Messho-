@@ -138,12 +138,19 @@ def parse_premium_markdown(text):
 async def reply_premium(message, text, **kwargs):
     final_text, entities = parse_premium_markdown(text)
     kwargs.pop("parse_mode", None)
-    return await message.reply_text(final_text, entities=entities or None, **kwargs)
+    try:
+        return await message.reply_text(final_text, entities=entities or None, **kwargs)
+    except Exception:
+        # Fallback to plain markdown if Telegram rejects custom entities
+        return await message.reply_text(text, parse_mode="Markdown", **kwargs)
 
 async def send_premium(bot, chat_id, text, **kwargs):
     final_text, entities = parse_premium_markdown(text)
     kwargs.pop("parse_mode", None)
-    return await bot.send_message(chat_id=chat_id, text=final_text, entities=entities or None, **kwargs)
+    try:
+        return await bot.send_message(chat_id=chat_id, text=final_text, entities=entities or None, **kwargs)
+    except Exception:
+        return await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", **kwargs)
 
 async def edit_premium(message, text, **kwargs):
     final_text, entities = parse_premium_markdown(text)
@@ -153,11 +160,14 @@ async def edit_premium(message, text, **kwargs):
     except Exception as e:
         if "Message is not modified" in str(e):
             return message
-        return await message.reply_text(final_text, entities=entities or None, **kwargs)
+        try:
+            return await message.edit_text(text, parse_mode="Markdown", **kwargs)
+        except Exception:
+            return await message.reply_text(text, parse_mode="Markdown", **kwargs)
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# ----------------- DATABASE (RAILWAY PERSISTENT DISK) -----------------
+# ----------------- DATABASE (PERSISTENT DISK) -----------------
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 try:
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -430,7 +440,7 @@ async def send_welcome_dashboard(bot, user_id: int):
         f"• *Live Proofs Channel:* Synchronized ({PROOF_CHANNEL})\n\n"
         "Select an option from the menu below:"
     )
-    await send_premium(
+    return await send_premium(
         bot,
         user_id,
         welcome_text,
@@ -486,7 +496,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
         conn.close()
 
-        # Direct Dashboard dispatch
+        # Instant Dashboard on Verification
         await reply_premium(update.message, "✅ *DEVICE VERIFIED SUCCESSFULLY!*\n\nYour account is now activated.")
         await send_welcome_dashboard(context.bot, user_id)
 
@@ -667,8 +677,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Press Claim to proceed:"
         )
         kb = InlineKeyboardMarkup([
-            [premium_button(f"Claim Meesho JSON ({pts} Pts)", "confirm_claim_file", "success", "claim")],
-            [premium_button("Back to Main", "back_to_main", None, None)]
+            [premium_button(f"📥 Claim Meesho JSON ({pts} Pts)", "confirm_claim_file", "success", "claim")],
+            [premium_button("🔙 Back to Main", "back_to_main")]
         ])
         await edit_premium(query.message, withdraw_text, reply_markup=kb)
 
@@ -706,8 +716,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query.message, 
                 f"📦 *CURRENTLY OUT OF STOCK!*\n\nMeesho Free JSON files are exhausted right now.\nKeep an eye on the proofs channel for restock alerts!",
                 reply_markup=InlineKeyboardMarkup([
-                    [premium_button("Live Proofs Channel", None, "primary", "channel", url=PROOF_CHANNEL_URL)],
-                    [premium_button("Back to Dashboard", "back_to_main", None, None)]
+                    [premium_button("📢 Live Proofs Channel", url=PROOF_CHANNEL_URL)],
+                    [premium_button("🔙 Back to Dashboard", "back_to_main")]
                 ]),
                 disable_web_page_preview=True
             )
@@ -736,8 +746,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption=caption,
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [premium_button("Check Out Proofs Here", None, "primary", "channel", url=PROOF_CHANNEL_URL)],
-                [premium_button("Main Menu", "back_to_main", None, None)]
+                [premium_button("📢 Check Out Proofs Here", url=PROOF_CHANNEL_URL)],
+                [premium_button("🔙 Main Menu", "back_to_main")]
             ])
         )
 
