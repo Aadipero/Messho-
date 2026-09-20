@@ -1,5 +1,7 @@
 import os
 import io
+import re
+import json
 import sqlite3
 import logging
 from datetime import datetime
@@ -175,7 +177,7 @@ async def edit_premium(message, text, **kwargs):
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# ----------------- DATABASE (RAILWAY PERSISTENT DISK) -----------------
+# ----------------- DATABASE (PERSISTENT DISK) -----------------
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 try:
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -191,6 +193,7 @@ def get_db():
 def init_db():
     conn = get_db()
     c = conn.cursor()
+    # Bilkul safe CREATE TABLE statements taaki user data kabhi reset na ho
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -240,9 +243,58 @@ def init_db():
             PRIMARY KEY (user_id, chat_id)
         )
     """)
-    c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('points_meesho', 3)")
+    c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('points_meesho', 7)")
     conn.commit()
+
+    # FIX: Purane joined JSON files ko auto-split karna agar database me galti se poora clump save ho gaya tha
+    try:
+        c.execute("SELECT id, content FROM meesho_files WHERE is_claimed = 0")
+        unclaimed = c.fetchall()
+        for row_id, content in unclaimed:
+            if "---" in content or content.count('{"mobile":') > 1:
+                # Isko split karke alag individual records banao
+                parts = split_json_entries(content)
+                if len(parts) > 1:
+                    c.execute("DELETE FROM meesho_files WHERE id = ?", (row_id,))
+                    for p in parts:
+                        c.execute("INSERT INTO meesho_files (content, is_claimed) VALUES (?, 0)", (p,))
+        conn.commit()
+    except Exception as e:
+        logging.error(f"Migration clean-up note: {e}")
+
     conn.close()
+
+def split_json_entries(raw_text: str):
+    """Multiple JSONs ko single-single items me reliably split karta hai."""
+    # 1. Check agar --- separator use hua hai
+    if "---" in raw_text:
+        items = [x.strip() for x in raw_text.split("---") if x.strip()]
+        valid = []
+        for it in items:
+            valid.append(it)
+        return valid
+
+    # 2. Agar bina --- ke direct multiple JSON objects hain: {...} {...}
+    extracted = []
+    stack = 0
+    start_idx = None
+    for idx, char in enumerate(raw_text):
+        if char == '{':
+            if stack == 0:
+                start_idx = idx
+            stack += 1
+        elif char == '}':
+            stack -= 1
+            if stack == 0 and start_idx is not None:
+                item = raw_text[start_idx:idx+1].strip()
+                if item:
+                    extracted.append(item)
+                start_idx = None
+
+    if extracted:
+        return extracted
+
+    return [raw_text.strip()] if raw_text.strip() else []
 
 init_db()
 
@@ -252,7 +304,7 @@ def get_required_points():
     c.execute("SELECT value FROM bot_settings WHERE key = 'points_meesho'")
     row = c.fetchone()
     conn.close()
-    return row[0] if row else 3
+    return row[0] if row else 7
 
 def update_required_points(val: int):
     conn = get_db()
@@ -317,7 +369,7 @@ def delete_channel_by_id(db_id: int):
     conn.commit()
     conn.close()
 
-# ----------------- KEYBOARDS (SMALL-CAPS STYLE) -----------------
+# ----------------- KEYBOARDS -----------------
 def get_join_keyboard():
     keyboard = []
     row = []
@@ -535,7 +587,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
         conn.close()
 
-        # Instant dashboard pop with effect
         await send_welcome_dashboard(context.bot, user_id)
 
         if ref_id:
@@ -551,7 +602,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "🚀 *Keep inviting friends to earn more free files!*"
                 )
                 await send_premium(context.bot, ref_id, alert_text)
-            except Exception as e:
+            except Exception:
                 pass
         return
 
@@ -660,7 +711,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # How To Order Guide Callback
     if data == "how_to_order":
         guide_text = (
             "╭─ *📖 ʜᴏᴡ ᴛᴏ ᴏʀᴅᴇʀ & sᴇᴛᴜᴘ ɢᴜɪᴅᴇ 📖*\n"
@@ -804,7 +854,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer(f"❌ Insufficient Points! You have {user_credits}, needed {pts}.", show_alert=True)
             return
 
-        c.execute("SELECT id, content FROM meesho_files WHERE is_claimed = 0 LIMIT 1")
+        # Fetch strictly EXACTLY 1 item from stock
+        c.execute("SELECT id, content FROM meesho_files WHERE is_claimed = 0 ORDER BY id ASC LIMIT 1")
         file_item = c.fetchone()
 
         if not file_item:
@@ -830,13 +881,27 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         f_id, f_content = file_item
+
+        # Double check: agar purane bug se content me 1 se zyada JSON clumps hain, toh pehla nikal lo
+        pieces = split_json_entries(f_content)
+        single_to_deliver = pieces[0]
+
+        # 1 item mark claimed
         c.execute("UPDATE meesho_files SET is_claimed = 1 WHERE id = ?", (f_id,))
+        
+        # Agar is record me aur bhi items the, baaki waale as fresh unclaimed insert kar do
+        if len(pieces) > 1:
+            for extra in pieces[1:]:
+                c.execute("INSERT INTO meesho_files (content, is_claimed) VALUES (?, 0)", (extra,))
+
+        # Deduct user points and log
         c.execute("UPDATE users SET credits = credits - ?, claimed_count = claimed_count + 1 WHERE user_id = ?", (pts, user_id))
         c.execute("INSERT INTO file_claims (user_id, file_id) VALUES (?, ?)", (user_id, f_id))
         conn.commit()
         conn.close()
 
-        file_data = io.BytesIO(f_content.encode("utf-8"))
+        # Send ONLY THIS 1 JSON as .txt
+        file_data = io.BytesIO(single_to_deliver.strip().encode("utf-8"))
         file_data.name = f"meesho_free_json_{user_id}_{f_id}.txt"
 
         caption = (
@@ -1008,17 +1073,17 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         action = context.user_data.pop("admin_action")
         
         if action == "bulk_add_files":
-            raw_entries = text.split("---")
-            entries = [e.strip() for e in raw_entries if e.strip()]
+            entries = split_json_entries(text)
             conn = get_db()
             c = conn.cursor()
             added = 0
             for item in entries:
-                c.execute("INSERT INTO meesho_files (content) VALUES (?)", (item,))
-                added += 1
+                if item:
+                    c.execute("INSERT INTO meesho_files (content, is_claimed) VALUES (?, 0)", (item,))
+                    added += 1
             conn.commit()
             conn.close()
-            await reply_premium(update.message, f"✅ Successfully added `{added}` Meesho JSON files!", reply_markup=get_admin_keyboard())
+            await reply_premium(update.message, f"✅ Successfully added `{added}` individual Meesho JSON files!", reply_markup=get_admin_keyboard())
 
         elif action == "edit_points":
             if not text.isdigit() or int(text) <= 0:
@@ -1078,7 +1143,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logging.error(msg="Exception while handling an update:", exc_info=context.error)
 
-# ----------------- MAIN RUNNER (24/7 AUTO RECONNECT) -----------------
+# ----------------- MAIN RUNNER -----------------
 if __name__ == "__main__":
     application = (
         ApplicationBuilder()
@@ -1097,5 +1162,5 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
     application.add_error_handler(error_handler)
 
-    logging.info("Bot is active and running 24/7 on Railway...")
+    logging.info("Bot is active and running 24/7...")
     application.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
