@@ -1,7 +1,7 @@
 import os
 import io
-import re
-import json
+import time
+import asyncio
 import sqlite3
 import logging
 from datetime import datetime
@@ -33,6 +33,11 @@ VERIFY_WEBAPP_URL = "https://aadipero.github.io/device-verify/"
 
 # Confetti / Party Popper Effect ID
 MESSAGE_CONFETTI_EFFECT_ID = "5046509860389126442"
+
+# ----------------- CACHE (SPEED OPTIMIZATION) -----------------
+# Telegram API rate limits ko bypass karne ke liye member check cache
+MEMBERSHIP_CACHE = {}  # { (user_id, chat_id): (is_member_bool, expire_timestamp) }
+CACHE_TTL = 30  # 30 seconds cache
 
 # ----------------- CUSTOM EMOJI IDS -----------------
 CUSTOM_EMOJI_IDS = {
@@ -177,7 +182,7 @@ async def edit_premium(message, text, **kwargs):
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# ----------------- DATABASE (PERSISTENT DISK) -----------------
+# ----------------- FAST DATABASE CONFIG -----------------
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 try:
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -186,14 +191,38 @@ except Exception:
     DB_PATH = "bot_data.db"
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH, timeout=20.0)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA cache_size=10000;")
     return conn
+
+def split_json_entries(raw_text: str):
+    """Reliably splits multiple JSONs whether separated by --- or plain braces."""
+    if "---" in raw_text:
+        return [x.strip() for x in raw_text.split("---") if x.strip()]
+
+    extracted = []
+    stack = 0
+    start_idx = None
+    for idx, char in enumerate(raw_text):
+        if char == '{':
+            if stack == 0:
+                start_idx = idx
+            stack += 1
+        elif char == '}':
+            stack -= 1
+            if stack == 0 and start_idx is not None:
+                item = raw_text[start_idx:idx+1].strip()
+                if item:
+                    extracted.append(item)
+                start_idx = None
+
+    return extracted if extracted else ([raw_text.strip()] if raw_text.strip() else [])
 
 def init_db():
     conn = get_db()
     c = conn.cursor()
-    # Bilkul safe CREATE TABLE statements taaki user data kabhi reset na ho
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -246,13 +275,11 @@ def init_db():
     c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('points_meesho', 7)")
     conn.commit()
 
-    # FIX: Purane joined JSON files ko auto-split karna agar database me galti se poora clump save ho gaya tha
+    # Old multi-block clean-up safely inside migration
     try:
         c.execute("SELECT id, content FROM meesho_files WHERE is_claimed = 0")
-        unclaimed = c.fetchall()
-        for row_id, content in unclaimed:
+        for row_id, content in c.fetchall():
             if "---" in content or content.count('{"mobile":') > 1:
-                # Isko split karke alag individual records banao
                 parts = split_json_entries(content)
                 if len(parts) > 1:
                     c.execute("DELETE FROM meesho_files WHERE id = ?", (row_id,))
@@ -260,66 +287,41 @@ def init_db():
                         c.execute("INSERT INTO meesho_files (content, is_claimed) VALUES (?, 0)", (p,))
         conn.commit()
     except Exception as e:
-        logging.error(f"Migration clean-up note: {e}")
+        logging.error(f"Migration note: {e}")
 
     conn.close()
-
-def split_json_entries(raw_text: str):
-    """Multiple JSONs ko single-single items me reliably split karta hai."""
-    # 1. Check agar --- separator use hua hai
-    if "---" in raw_text:
-        items = [x.strip() for x in raw_text.split("---") if x.strip()]
-        valid = []
-        for it in items:
-            valid.append(it)
-        return valid
-
-    # 2. Agar bina --- ke direct multiple JSON objects hain: {...} {...}
-    extracted = []
-    stack = 0
-    start_idx = None
-    for idx, char in enumerate(raw_text):
-        if char == '{':
-            if stack == 0:
-                start_idx = idx
-            stack += 1
-        elif char == '}':
-            stack -= 1
-            if stack == 0 and start_idx is not None:
-                item = raw_text[start_idx:idx+1].strip()
-                if item:
-                    extracted.append(item)
-                start_idx = None
-
-    if extracted:
-        return extracted
-
-    return [raw_text.strip()] if raw_text.strip() else []
 
 init_db()
 
-def get_required_points():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT value FROM bot_settings WHERE key = 'points_meesho'")
-    row = c.fetchone()
-    conn.close()
-    return row[0] if row else 7
+# Asynchronous DB wrappers for non-blocking execution
+async def db_get_required_points():
+    def query():
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT value FROM bot_settings WHERE key = 'points_meesho'")
+        row = c.fetchone()
+        conn.close()
+        return row[0] if row else 7
+    return await asyncio.to_thread(query)
 
-def update_required_points(val: int):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('points_meesho', ?)", (val,))
-    conn.commit()
-    conn.close()
+async def db_update_required_points(val: int):
+    def query():
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('points_meesho', ?)", (val,))
+        conn.commit()
+        conn.close()
+    return await asyncio.to_thread(query)
 
-def get_current_stock():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM meesho_files WHERE is_claimed = 0")
-    val = c.fetchone()[0]
-    conn.close()
-    return val
+async def db_get_current_stock():
+    def query():
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM meesho_files WHERE is_claimed = 0")
+        val = c.fetchone()[0]
+        conn.close()
+        return val
+    return await asyncio.to_thread(query)
 
 def parse_chat_id(val: str):
     val = str(val).strip()
@@ -332,48 +334,32 @@ def parse_chat_id(val: str):
         return f"@{val}"
     return val
 
-def get_all_channels():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT id, type, name, chat_id, url FROM channels_config_v2")
-    rows = c.fetchall()
-    conn.close()
-    channels = []
-    for r in rows:
-        cid = parse_chat_id(r[3])
-        channels.append({
-            "db_id": r[0],
-            "type": r[1],
-            "name": r[2],
-            "id": cid,
-            "raw_id": str(r[3]).strip(),
-            "url": r[4]
-        })
-    return channels
-
-def add_channel_config(ch_type: str, name: str, chat_id: str, url: str):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("""
-        INSERT INTO channels_config_v2 (type, name, chat_id, url) 
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(chat_id) DO UPDATE SET type=excluded.type, name=excluded.name, url=excluded.url
-    """, (ch_type, name, chat_id.strip(), url.strip()))
-    conn.commit()
-    conn.close()
-
-def delete_channel_by_id(db_id: int):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("DELETE FROM channels_config_v2 WHERE id = ?", (db_id,))
-    conn.commit()
-    conn.close()
+async def db_get_all_channels():
+    def query():
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT id, type, name, chat_id, url FROM channels_config_v2")
+        rows = c.fetchall()
+        conn.close()
+        channels = []
+        for r in rows:
+            cid = parse_chat_id(r[3])
+            channels.append({
+                "db_id": r[0],
+                "type": r[1],
+                "name": r[2],
+                "id": cid,
+                "raw_id": str(r[3]).strip(),
+                "url": r[4]
+            })
+        return channels
+    return await asyncio.to_thread(query)
 
 # ----------------- KEYBOARDS -----------------
-def get_join_keyboard():
+async def get_join_keyboard():
     keyboard = []
     row = []
-    channels = get_all_channels()
+    channels = await db_get_all_channels()
     for ch in channels:
         row.append(premium_button(f"✨ {ch['name']}", None, "primary", "channel", url=ch["url"]))
         if len(row) == 2:
@@ -411,9 +397,8 @@ def get_main_keyboard():
         ]
     ])
 
-def get_withdraw_keyboard():
-    stock = get_current_stock()
-    
+async def get_withdraw_keyboard():
+    stock = await db_get_current_stock()
     if stock > 0:
         claim_btn = premium_button(f"🛍️ ᴍᴇᴇsʜᴏ ғʀᴇᴇ ᴊsᴏɴ — ғʀᴇᴇ | {stock} ᴘᴄs", "confirm_claim_file", "success", "cute_gift")
     else:
@@ -424,8 +409,8 @@ def get_withdraw_keyboard():
         [premium_button("🔙 ʙᴀᴄᴋ", "back_to_main", None, "repeat")]
     ])
 
-def get_admin_keyboard():
-    pts = get_required_points()
+async def get_admin_keyboard():
+    pts = await db_get_required_points()
     return InlineKeyboardMarkup([
         [
             premium_button("➕ ᴀᴅᴅ ᴊsᴏɴs (ʙᴜʟᴋ)", "admin_bulk_files", "primary", "admin_add"),
@@ -448,8 +433,8 @@ def get_admin_keyboard():
         ]
     ])
 
-def get_admin_channel_keyboard():
-    channels = get_all_channels()
+async def get_admin_channel_keyboard():
+    channels = await db_get_all_channels()
     kb = [
         [premium_button("➕ ᴀᴅᴅ ᴘᴜʙʟɪᴄ", "admin_add_public", "primary", "plus")],
         [premium_button("➕ ᴀᴅᴅ ᴘʀɪᴠᴀᴛᴇ", "admin_add_private", "primary", "plus")],
@@ -461,30 +446,37 @@ def get_admin_channel_keyboard():
     kb.append([premium_button("🔙 ʙᴀᴄᴋ", "admin_back_to_panel")])
     return InlineKeyboardMarkup(kb)
 
-# ----------------- TRACKING & HELPERS -----------------
+# ----------------- PARALLEL NON-BLOCKING HELPERS -----------------
 async def track_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     req = update.chat_join_request
     if req:
         u_id = req.user_chat_id
         c_id = str(req.chat.id)
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("INSERT OR IGNORE INTO join_requests (user_id, chat_id) VALUES (?, ?)", (u_id, c_id))
-        conn.commit()
-        conn.close()
+        def query():
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("INSERT OR IGNORE INTO join_requests (user_id, chat_id) VALUES (?, ?)", (u_id, c_id))
+            conn.commit()
+            conn.close()
+        await asyncio.to_thread(query)
 
 async def get_unjoined_channels(user_id: int, bot):
-    channels = get_all_channels()
+    channels = await db_get_all_channels()
     if not channels:
         return []
 
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT chat_id FROM join_requests WHERE user_id = ?", (user_id,))
-    requested_chats = {str(row[0]) for row in c.fetchall()}
-    conn.close()
+    def get_reqs():
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT chat_id FROM join_requests WHERE user_id = ?", (user_id,))
+        rows = {str(row[0]) for row in c.fetchall()}
+        conn.close()
+        return rows
 
+    requested_chats = await asyncio.to_thread(get_reqs)
+    now = time.time()
     unjoined = []
+
     for ch in channels:
         target_id = ch["id"]
         str_id = str(target_id)
@@ -493,11 +485,21 @@ async def get_unjoined_channels(user_id: int, bot):
         if str_id in requested_chats or raw_str in requested_chats:
             continue
 
+        cache_key = (user_id, str_id)
+        if cache_key in MEMBERSHIP_CACHE:
+            is_mem, exp = MEMBERSHIP_CACHE[cache_key]
+            if now < exp:
+                if not is_mem:
+                    unjoined.append(ch)
+                continue
+
         try:
             member = await bot.get_chat_member(chat_id=target_id, user_id=user_id)
             if member.status in ["member", "administrator", "creator", "restricted"]:
+                MEMBERSHIP_CACHE[cache_key] = (True, now + CACHE_TTL)
                 continue
             else:
+                MEMBERSHIP_CACHE[cache_key] = (False, now + CACHE_TTL)
                 unjoined.append(ch)
         except Exception:
             if str_id in requested_chats or raw_str in requested_chats:
@@ -506,16 +508,18 @@ async def get_unjoined_channels(user_id: int, bot):
             
     return unjoined
 
-def is_device_verified(user_id: int) -> bool:
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT device_id FROM users WHERE user_id = ?", (user_id,))
-    row = c.fetchone()
-    conn.close()
-    return bool(row and row[0])
+async def is_device_verified(user_id: int) -> bool:
+    def query():
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT device_id FROM users WHERE user_id = ?", (user_id,))
+        row = c.fetchone()
+        conn.close()
+        return bool(row and row[0])
+    return await asyncio.to_thread(query)
 
 async def send_welcome_dashboard(bot, user_id: int):
-    pts = get_required_points()
+    pts = await db_get_required_points()
     welcome_text = (
         "╭─ *✨ ʟɪᴠᴇ sᴛᴏʀᴇ & ᴅᴀsʜʙᴏᴀʀᴅ ✨*\n"
         "│\n"
@@ -545,50 +549,47 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     bot_info = await context.bot.get_me()
 
-    # --- DEVICE VERIFICATION REDIRECT HANDLER ---
     if args and args[0].startswith("v_"):
         device_id = args[0].replace("v_", "")
-        conn = get_db()
-        c = conn.cursor()
+        
+        def handle_verification():
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("SELECT user_id FROM users WHERE device_id = ? AND user_id != ?", (device_id, user_id))
+            if c.fetchone():
+                conn.close()
+                return "FRAUD", None, 0
 
-        # Fraud Check: Multiple Accounts
-        c.execute("SELECT user_id FROM users WHERE device_id = ? AND user_id != ?", (device_id, user_id))
-        fraud = c.fetchone()
-        if fraud:
+            c.execute("SELECT referrer_id, device_id FROM users WHERE user_id = ?", (user_id,))
+            u = c.fetchone()
+            ref_id = None
+            new_balance = 0
+
+            if u:
+                if not u[1]:
+                    ref_id = u[0]
+                    c.execute("UPDATE users SET device_id = ? WHERE user_id = ?", (device_id, user_id))
+                    if ref_id:
+                        c.execute("UPDATE users SET credits = credits + 1 WHERE user_id = ?", (ref_id,))
+                        c.execute("SELECT credits FROM users WHERE user_id = ?", (ref_id,))
+                        bal_row = c.fetchone()
+                        new_balance = bal_row[0] if bal_row else 1
+                    conn.commit()
+            else:
+                c.execute("INSERT INTO users (user_id, referrer_id, credits, claimed_count, device_id) VALUES (?, NULL, 0, 0, ?)", (user_id, device_id))
+                conn.commit()
             conn.close()
+            return "SUCCESS", ref_id, new_balance
+
+        status, ref_id, new_balance = await asyncio.to_thread(handle_verification)
+        if status == "FRAUD":
             await reply_premium(
                 update.message,
-                "╭─ *🛑 sᴇᴄᴜʀɪᴛʏ ᴀʟᴇʀᴛ 🛑*\n"
-                "│\n"
-                "│ ⚠️ *Device Already Registered!*\n"
-                "│ • *Rule:* Only 1 account per physical device.\n"
-                "│ • *Status:* Authorization Rejected.\n"
-                "╰───────────────────────────"
+                "╭─ *🛑 sᴇᴄᴜʀɪᴛʏ ᴀʟᴇʀᴛ 🛑*\n│\n│ ⚠️ *Device Already Registered!*\n│ • *Rule:* Only 1 account per device.\n╰───────────────────────────"
             )
             return
 
-        c.execute("SELECT referrer_id, device_id FROM users WHERE user_id = ?", (user_id,))
-        u = c.fetchone()
-        ref_id = None
-        new_balance = 0
-
-        if u:
-            if not u[1]:
-                ref_id = u[0]
-                c.execute("UPDATE users SET device_id = ? WHERE user_id = ?", (device_id, user_id))
-                if ref_id:
-                    c.execute("UPDATE users SET credits = credits + 1 WHERE user_id = ?", (ref_id,))
-                    c.execute("SELECT credits FROM users WHERE user_id = ?", (ref_id,))
-                    bal_row = c.fetchone()
-                    new_balance = bal_row[0] if bal_row else 1
-                conn.commit()
-        else:
-            c.execute("INSERT INTO users (user_id, referrer_id, credits, claimed_count, device_id, ip_address, last_start_time) VALUES (?, NULL, 0, 0, ?, NULL, NULL)", (user_id, device_id))
-            conn.commit()
-        conn.close()
-
         await send_welcome_dashboard(context.bot, user_id)
-
         if ref_id:
             try:
                 masked = str(user_id)[:4] + "****" + str(user_id)[-2:]
@@ -606,21 +607,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         return
 
-    # --- NORMAL /START FLOW ---
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
-    user = c.fetchone()
+    def ensure_user():
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+        if not c.fetchone():
+            referrer = None
+            if args and args[0].isdigit() and int(args[0]) != user_id:
+                referrer = int(args[0])
+            c.execute("INSERT INTO users (user_id, referrer_id, credits, claimed_count) VALUES (?, ?, 0, 0)", (user_id, referrer))
+            conn.commit()
+        conn.close()
 
-    if not user:
-        referrer = None
-        if args and args[0].isdigit():
-            ref_candidate = int(args[0])
-            if ref_candidate != user_id:
-                referrer = ref_candidate
-        c.execute("INSERT INTO users (user_id, referrer_id, credits, claimed_count, device_id, ip_address, last_start_time) VALUES (?, ?, 0, 0, NULL, NULL, NULL)", (user_id, referrer))
-        conn.commit()
-    conn.close()
+    await asyncio.to_thread(ensure_user)
 
     unjoined = await get_unjoined_channels(user_id, context.bot)
     if unjoined:
@@ -633,10 +632,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "╰───────────────────────────\n\n"
             "👉 *Tap the buttons below and click CHECK JOINED.*"
         )
-        await reply_premium(update.message, text, reply_markup=get_join_keyboard(), disable_web_page_preview=True)
+        join_kb = await get_join_keyboard()
+        await reply_premium(update.message, text, reply_markup=join_kb, disable_web_page_preview=True)
         return
 
-    if not is_device_verified(user_id):
+    verified = await is_device_verified(user_id)
+    if not verified:
         text = (
             "╭─ *🔒 ᴀᴄᴄᴏᴜɴᴛ ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ 🔒*\n"
             "│\n"
@@ -652,8 +653,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or update.effective_user.id != ADMIN_ID:
         return
-    pts = get_required_points()
-    stock = get_current_stock()
+    pts = await db_get_required_points()
+    stock = await db_get_current_stock()
+    admin_kb = await get_admin_keyboard()
     await reply_premium(
         update.message,
         "╭─ *⚙️ ᴀᴅᴍɪɴ ᴄᴏɴᴛʀᴏʟ ᴘᴀɴᴇʟ ⚙️*\n"
@@ -663,21 +665,26 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"│ 📊 *Stock Live:* `{stock} Files`\n"
         "╰───────────────────────────\n\n"
         "*Select an admin action below:*",
-        reply_markup=get_admin_keyboard()
+        reply_markup=admin_kb
     )
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
     user_id = query.from_user.id
-    pts = get_required_points()
     bot_info = await context.bot.get_me()
 
     if data == "check_join":
+        # Cache invalidate on manual check
+        for k in list(MEMBERSHIP_CACHE.keys()):
+            if k[0] == user_id:
+                MEMBERSHIP_CACHE.pop(k, None)
+                
         unjoined = await get_unjoined_channels(user_id, context.bot)
         if not unjoined:
             await query.answer("✅ Verified Successfully!", show_alert=False)
-            if not is_device_verified(user_id):
+            verified = await is_device_verified(user_id)
+            if not verified:
                 text = (
                     "╭─ *🔒 ᴀᴄᴄᴏᴜɴᴛ ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ 🔒*\n"
                     "│\n"
@@ -698,17 +705,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "╰───────────────────────────\n\n"
                 "👉 *Tap buttons below and click CHECK JOINED.*"
             )
+            join_kb = await get_join_keyboard()
             try:
-                await edit_premium(query.message, text, reply_markup=get_join_keyboard(), disable_web_page_preview=True)
+                await edit_premium(query.message, text, reply_markup=join_kb, disable_web_page_preview=True)
             except Exception:
                 pass
         return
 
     if data == "stock_empty_alert":
-        await query.answer(
-            "🥺 Opps! Currently Out of Stock!\n\nRestocking updates are posted on our proof channel soon. Stay tuned! 🚀", 
-            show_alert=True
-        )
+        await query.answer("🥺 Opps! Currently Out of Stock! Restocking soon. 🚀", show_alert=True)
         return
 
     if data == "how_to_order":
@@ -721,8 +726,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "│ • Complete step-by-step tutorial\n"
             "│ • Free Order Script details\n"
             "│ • 24/7 Support instructions\n"
-            "╰───────────────────────────\n\n"
-            "👉 *Click the button below to view the official guide post:*"
+            "╰───────────────────────────"
         )
         guide_kb = InlineKeyboardMarkup([
             [premium_button("👉 ᴏᴘᴇɴ sᴇᴛᴜᴘ ɢᴜɪᴅᴇ", None, "success", "cute_star", url=SETUP_GUIDE_URL)],
@@ -734,6 +738,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if data == "ref_link":
+        pts = await db_get_required_points()
         link = f"https://t.me/{bot_info.username}?start={user_id}"
         ref_text = (
             "╭─ *🔗 ʏᴏᴜʀ ᴇxᴄʟᴜsɪᴠᴇ ʟɪɴᴋ 🔗*\n"
@@ -748,26 +753,26 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_premium(query.message, ref_text, disable_web_page_preview=True)
 
     elif data == "my_stats":
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT credits, claimed_count FROM users WHERE user_id = ?", (user_id,))
-        row = c.fetchone()
-        credits = row[0] if row else 0
-        claimed = row[1] if row else 0
-        
-        c.execute("SELECT COUNT(*) FROM users WHERE referrer_id = ? AND device_id IS NOT NULL", (user_id,))
-        my_refs = c.fetchone()[0]
+        def get_stats():
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("SELECT credits, claimed_count FROM users WHERE user_id = ?", (user_id,))
+            row = c.fetchone()
+            credits = row[0] if row else 0
+            claimed = row[1] if row else 0
+            c.execute("SELECT COUNT(*) FROM users WHERE referrer_id = ? AND device_id IS NOT NULL", (user_id,))
+            my_refs = c.fetchone()[0]
+            c.execute("""
+                SELECT referrer_id, COUNT(user_id) as total_refs
+                FROM users WHERE referrer_id IS NOT NULL AND device_id IS NOT NULL
+                GROUP BY referrer_id ORDER BY total_refs DESC LIMIT 3
+            """)
+            top = c.fetchall()
+            conn.close()
+            return credits, claimed, my_refs, top
 
-        c.execute("""
-            SELECT referrer_id, COUNT(user_id) as total_refs
-            FROM users
-            WHERE referrer_id IS NOT NULL AND device_id IS NOT NULL
-            GROUP BY referrer_id
-            ORDER BY total_refs DESC
-            LIMIT 3
-        """)
-        top_users = c.fetchall()
-        conn.close()
+        credits, claimed, my_refs, top_users = await asyncio.to_thread(get_stats)
+        pts = await db_get_required_points()
 
         leaderboard_str = ""
         rank_emojis = ["🥇", "🥈", "🥉"]
@@ -793,14 +798,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_premium(query.message, stats_text)
 
     elif data == "my_referrals":
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM users WHERE referrer_id = ? AND device_id IS NOT NULL", (user_id,))
-        count = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM users WHERE referrer_id = ? AND device_id IS NULL", (user_id,))
-        pending = c.fetchone()[0]
-        conn.close()
+        def get_refs():
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM users WHERE referrer_id = ? AND device_id IS NOT NULL", (user_id,))
+            count = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM users WHERE referrer_id = ? AND device_id IS NULL", (user_id,))
+            pending = c.fetchone()[0]
+            conn.close()
+            return count, pending
 
+        count, pending = await asyncio.to_thread(get_refs)
         refs_text = (
             "╭─ *👥 ʏᴏᴜʀ ɴᴇᴛᴡᴏʀᴋ 👥*\n"
             "│\n"
@@ -819,10 +827,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "│ Select a voucher below 👇\n"
             "╰───────────────────────────"
         )
-        await edit_premium(query.message, withdraw_text, reply_markup=get_withdraw_keyboard())
+        withdraw_kb = await get_withdraw_keyboard()
+        await edit_premium(query.message, withdraw_text, reply_markup=withdraw_kb)
 
     elif data == "back_to_main":
-        pts = get_required_points()
+        pts = await db_get_required_points()
         welcome_text = (
             "╭─ *✨ ʟɪᴠᴇ sᴛᴏʀᴇ & ᴅᴀsʜʙᴏᴀʀᴅ ✨*\n"
             "│\n"
@@ -843,23 +852,48 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "confirm_claim_file":
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT credits FROM users WHERE user_id = ?", (user_id,))
-        row = c.fetchone()
-        user_credits = row[0] if row else 0
+        pts = await db_get_required_points()
 
-        if user_credits < pts:
+        def process_redemption():
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("SELECT credits FROM users WHERE user_id = ?", (user_id,))
+            row = c.fetchone()
+            user_credits = row[0] if row else 0
+
+            if user_credits < pts:
+                conn.close()
+                return "LOW_POINTS", user_credits, None, None
+
+            c.execute("SELECT id, content FROM meesho_files WHERE is_claimed = 0 ORDER BY id ASC LIMIT 1")
+            file_item = c.fetchone()
+
+            if not file_item:
+                conn.close()
+                return "NO_STOCK", user_credits, None, None
+
+            f_id, f_content = file_item
+            pieces = split_json_entries(f_content)
+            single_to_deliver = pieces[0]
+
+            c.execute("UPDATE meesho_files SET is_claimed = 1 WHERE id = ?", (f_id,))
+            if len(pieces) > 1:
+                for extra in pieces[1:]:
+                    c.execute("INSERT INTO meesho_files (content, is_claimed) VALUES (?, 0)", (extra,))
+
+            c.execute("UPDATE users SET credits = credits - ?, claimed_count = claimed_count + 1 WHERE user_id = ?", (pts, user_id))
+            c.execute("INSERT INTO file_claims (user_id, file_id) VALUES (?, ?)", (user_id, f_id))
+            conn.commit()
             conn.close()
+            return "SUCCESS", user_credits, f_id, single_to_deliver
+
+        res_status, user_credits, f_id, single_to_deliver = await asyncio.to_thread(process_redemption)
+
+        if res_status == "LOW_POINTS":
             await query.answer(f"❌ Insufficient Points! You have {user_credits}, needed {pts}.", show_alert=True)
             return
 
-        # Fetch strictly EXACTLY 1 item from stock
-        c.execute("SELECT id, content FROM meesho_files WHERE is_claimed = 0 ORDER BY id ASC LIMIT 1")
-        file_item = c.fetchone()
-
-        if not file_item:
-            conn.close()
+        if res_status == "NO_STOCK":
             await query.answer("🥺 Opps! Currently Out of Stock! Restocking soon.", show_alert=True)
             try:
                 await context.bot.send_message(chat_id=ADMIN_ID, text=f"🚨 *STOCK OVER ALERT*\nUser `{user_id}` attempted to withdraw Meesho JSON.", parse_mode="Markdown")
@@ -867,11 +901,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             await reply_premium(
                 query.message, 
-                "╭─ *📦 ᴏᴜᴛ ᴏғ sᴛᴏᴄᴋ 📦*\n"
-                "│\n"
-                "│ 🥺 Meesho Free JSON files are exhausted.\n"
-                "│ Updates and restock alerts are in the proof channel!\n"
-                "╰───────────────────────────",
+                "╭─ *📦 ᴏᴜᴛ ᴏғ sᴛᴏᴄᴋ 📦*\n│\n│ 🥺 Meesho Free JSON files are exhausted.\n╰───────────────────────────",
                 reply_markup=InlineKeyboardMarkup([
                     [premium_button("📢 ʟɪᴠᴇ ᴘʀᴏᴏғs ᴄʜᴀɴɴᴇʟ", None, "primary", "channel", url=PROOF_CHANNEL_URL)],
                     [premium_button("🔙 ʙᴀᴄᴋ", "back_to_main", None, "repeat")]
@@ -880,27 +910,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        f_id, f_content = file_item
-
-        # Double check: agar purane bug se content me 1 se zyada JSON clumps hain, toh pehla nikal lo
-        pieces = split_json_entries(f_content)
-        single_to_deliver = pieces[0]
-
-        # 1 item mark claimed
-        c.execute("UPDATE meesho_files SET is_claimed = 1 WHERE id = ?", (f_id,))
-        
-        # Agar is record me aur bhi items the, baaki waale as fresh unclaimed insert kar do
-        if len(pieces) > 1:
-            for extra in pieces[1:]:
-                c.execute("INSERT INTO meesho_files (content, is_claimed) VALUES (?, 0)", (extra,))
-
-        # Deduct user points and log
-        c.execute("UPDATE users SET credits = credits - ?, claimed_count = claimed_count + 1 WHERE user_id = ?", (pts, user_id))
-        c.execute("INSERT INTO file_claims (user_id, file_id) VALUES (?, ?)", (user_id, f_id))
-        conn.commit()
-        conn.close()
-
-        # Send ONLY THIS 1 JSON as .txt
         file_data = io.BytesIO(single_to_deliver.strip().encode("utf-8"))
         file_data.name = f"meesho_free_json_{user_id}_{f_id}.txt"
 
@@ -943,29 +952,28 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "admin_stock":
         if user_id != ADMIN_ID:
             return
-        stock = get_current_stock()
+        stock = await db_get_current_stock()
         await reply_premium(query.message, f"╭─ *📦 sᴛᴏᴄᴋ sᴛᴀᴛᴜs*\n│\n│ Available Meesho JSON Files: `{stock}`\n╰──────────────────")
 
     elif data == "admin_users":
         if user_id != ADMIN_ID:
             return
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM users")
-        total_users = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM users WHERE device_id IS NOT NULL")
-        verified_users = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM file_claims")
-        total_claims = c.fetchone()[0]
-        conn.close()
+        def get_user_stats():
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM users")
+            total_users = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM users WHERE device_id IS NOT NULL")
+            verified_users = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM file_claims")
+            total_claims = c.fetchone()[0]
+            conn.close()
+            return total_users, verified_users, total_claims
+
+        t_users, v_users, claims = await asyncio.to_thread(get_user_stats)
         await reply_premium(
             query.message,
-            "╭─ *👥 ᴜsᴇʀ sᴛᴀᴛs 👥*\n"
-            "│\n"
-            f"│ • Total Registered: `{total_users}`\n"
-            f"│ • Verified Devices: `{verified_users}`\n"
-            f"│ • Total Dispatches: `{total_claims}`\n"
-            "╰───────────────────"
+            f"╭─ *👥 ᴜsᴇʀ sᴛᴀᴛs 👥*\n│\n│ • Total Registered: `{t_users}`\n│ • Verified Devices: `{v_users}`\n│ • Total Dispatches: `{claims}`\n╰───────────────────"
         )
 
     elif data == "admin_bulk_files":
@@ -993,12 +1001,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "admin_channel_menu":
         if user_id != ADMIN_ID:
             return
-        channels = get_all_channels()
+        channels = await db_get_all_channels()
         info_lines = "\n".join([f"│ • {ch['name']} (`{ch['id']}`)" for ch in channels]) if channels else "│ No channels configured."
+        channel_kb = await get_admin_channel_keyboard()
         await edit_premium(
             query.message,
             f"╭─ *📢 ᴄʜᴀɴɴᴇʟ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ*\n│ Total: `{len(channels)}`\n│\n{info_lines}\n╰───────────────────",
-            reply_markup=get_admin_channel_keyboard(),
+            reply_markup=channel_kb,
             disable_web_page_preview=True
         )
 
@@ -1016,26 +1025,34 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_id != ADMIN_ID:
             return
         db_id = int(data.replace("admin_del_", ""))
-        delete_channel_by_id(db_id)
+        def del_ch():
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("DELETE FROM channels_config_v2 WHERE id = ?", (db_id,))
+            conn.commit()
+            conn.close()
+        await asyncio.to_thread(del_ch)
         await query.answer("✅ Channel Deleted!", show_alert=True)
-        channels = get_all_channels()
+        channels = await db_get_all_channels()
         info_lines = "\n".join([f"│ • {ch['name']} (`{ch['id']}`)" for ch in channels]) if channels else "│ No channels configured."
+        channel_kb = await get_admin_channel_keyboard()
         await edit_premium(
             query.message,
             f"╭─ *📢 ᴄʜᴀɴɴᴇʟ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ*\n│ Total: `{len(channels)}`\n│\n{info_lines}\n╰───────────────────",
-            reply_markup=get_admin_channel_keyboard(),
+            reply_markup=channel_kb,
             disable_web_page_preview=True
         )
 
     elif data == "admin_back_to_panel":
         if user_id != ADMIN_ID:
             return
-        pts = get_required_points()
-        stock = get_current_stock()
+        pts = await db_get_required_points()
+        stock = await db_get_current_stock()
+        admin_kb = await get_admin_keyboard()
         await edit_premium(
             query.message,
             f"╭─ *⚙️ ᴀᴅᴍɪɴ ᴄᴏɴᴛʀᴏʟ ᴘᴀɴᴇʟ*\n│ • Points: `{pts}p`\n│ • Stock: `{stock} pcs`\n╰───────────────────",
-            reply_markup=get_admin_keyboard()
+            reply_markup=admin_kb
         )
 
     elif data == "admin_broadcast_prompt":
@@ -1054,12 +1071,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "admin_refresh":
         if user_id != ADMIN_ID:
             return
-        pts = get_required_points()
-        stock = get_current_stock()
+        pts = await db_get_required_points()
+        stock = await db_get_current_stock()
+        admin_kb = await get_admin_keyboard()
         await edit_premium(
             query.message, 
             f"╭─ *⚙️ ᴀᴅᴍɪɴ ᴘᴀɴᴇʟ (ʀᴇғʀᴇsʜᴇᴅ)*\n│ • Points: `{pts}p`\n│ • Stock: `{stock} pcs`\n╰───────────────────", 
-            reply_markup=get_admin_keyboard()
+            reply_markup=admin_kb
         )
 
 # ----------------- ADMIN INPUT HANDLER -----------------
@@ -1068,90 +1086,115 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     user_id = update.effective_user.id
     text = update.message.text.strip()
+    admin_kb = await get_admin_keyboard()
     
     if user_id == ADMIN_ID and "admin_action" in context.user_data:
         action = context.user_data.pop("admin_action")
         
         if action == "bulk_add_files":
             entries = split_json_entries(text)
-            conn = get_db()
-            c = conn.cursor()
-            added = 0
-            for item in entries:
-                if item:
-                    c.execute("INSERT INTO meesho_files (content, is_claimed) VALUES (?, 0)", (item,))
-                    added += 1
-            conn.commit()
-            conn.close()
-            await reply_premium(update.message, f"✅ Successfully added `{added}` individual Meesho JSON files!", reply_markup=get_admin_keyboard())
+            def save_bulk():
+                conn = get_db()
+                c = conn.cursor()
+                added = 0
+                for item in entries:
+                    if item:
+                        c.execute("INSERT INTO meesho_files (content, is_claimed) VALUES (?, 0)", (item,))
+                        added += 1
+                conn.commit()
+                conn.close()
+                return added
+            added = await asyncio.to_thread(save_bulk)
+            await reply_premium(update.message, f"✅ Successfully added `{added}` individual Meesho JSON files!", reply_markup=admin_kb)
 
         elif action == "edit_points":
             if not text.isdigit() or int(text) <= 0:
                 await reply_premium(update.message, "❌ Invalid point value.")
                 return
             val = int(text)
-            update_required_points(val)
-            await reply_premium(update.message, f"✅ Updated to `{val} Points` required.", reply_markup=get_admin_keyboard())
+            await db_update_required_points(val)
+            await reply_premium(update.message, f"✅ Updated to `{val} Points` required.", reply_markup=admin_kb)
 
         elif action.startswith("add_channel_"):
             ch_type = action.replace("add_channel_", "")
             parts = [p.strip() for p in text.split("|")]
             if len(parts) != 3:
-                await reply_premium(update.message, "❌ Use: `Name | Chat ID | URL`", reply_markup=get_admin_channel_keyboard())
+                channel_kb = await get_admin_channel_keyboard()
+                await reply_premium(update.message, "❌ Use: `Name | Chat ID | URL`", reply_markup=channel_kb)
                 return
-            add_channel_config(ch_type, parts[0], parts[1], parts[2])
-            await reply_premium(update.message, "✅ Channel Added Successfully!", reply_markup=get_admin_keyboard())
+            def add_ch():
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("""
+                    INSERT INTO channels_config_v2 (type, name, chat_id, url) 
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(chat_id) DO UPDATE SET type=excluded.type, name=excluded.name, url=excluded.url
+                """, (ch_type, parts[0], parts[1].strip(), parts[2].strip()))
+                conn.commit()
+                conn.close()
+            await asyncio.to_thread(add_ch)
+            await reply_premium(update.message, "✅ Channel Added Successfully!", reply_markup=admin_kb)
 
         elif action in ["admin_add_user_points", "admin_deduct_user_points"]:
             try:
                 parts = text.strip().split()
                 target_id = int(parts[0])
                 amount = int(parts[1])
-                conn = get_db()
-                c = conn.cursor()
-                c.execute("SELECT credits FROM users WHERE user_id = ?", (target_id,))
-                row = c.fetchone()
-                if not row:
+                def update_user():
+                    conn = get_db()
+                    c = conn.cursor()
+                    c.execute("SELECT credits FROM users WHERE user_id = ?", (target_id,))
+                    row = c.fetchone()
+                    if not row:
+                        conn.close()
+                        return None
+                    old_p = int(row[0] or 0)
+                    new_p = old_p + amount if action == "admin_add_user_points" else max(0, old_p - amount)
+                    c.execute("UPDATE users SET credits = ? WHERE user_id = ?", (new_p, target_id))
+                    conn.commit()
                     conn.close()
+                    return new_p
+                new_balance = await asyncio.to_thread(update_user)
+                if new_balance is None:
                     await reply_premium(update.message, f"❌ User `{target_id}` not found.")
-                    return
-                old_p = int(row[0] or 0)
-                new_p = old_p + amount if action == "admin_add_user_points" else max(0, old_p - amount)
-                c.execute("UPDATE users SET credits = ? WHERE user_id = ?", (new_p, target_id))
-                conn.commit()
-                conn.close()
-                await reply_premium(update.message, f"✅ User `{target_id}` updated. New Balance: `{new_p}`")
+                else:
+                    await reply_premium(update.message, f"✅ User `{target_id}` updated. New Balance: `{new_balance}`")
             except Exception:
                 await reply_premium(update.message, "❌ Use format: `USER_ID AMOUNT`")
 
         elif action == "broadcast":
-            conn = get_db()
-            c = conn.cursor()
-            c.execute("SELECT user_id FROM users")
-            users = c.fetchall()
-            conn.close()
+            def get_all_uids():
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT user_id FROM users")
+                uids = [row[0] for row in c.fetchall()]
+                conn.close()
+                return uids
+            users = await asyncio.to_thread(get_all_uids)
             sent = 0
-            for (uid,) in users:
+            for uid in users:
                 try:
                     await send_premium(context.bot, uid, f"╭─ *📢 ᴀɴɴᴏᴜɴᴄᴇᴍᴇɴᴛ 📢*\n│\n│ {text}\n╰───────────────────", disable_web_page_preview=True)
                     sent += 1
                 except Exception:
                     pass
-            await reply_premium(update.message, f"✅ Broadcast delivered to `{sent}` users.", reply_markup=get_admin_keyboard())
+            await reply_premium(update.message, f"✅ Broadcast delivered to `{sent}` users.", reply_markup=admin_kb)
 
-# ----------------- ERROR HANDLER FOR 24/7 RUNTIME -----------------
+# ----------------- ERROR HANDLER -----------------
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logging.error(msg="Exception while handling an update:", exc_info=context.error)
 
-# ----------------- MAIN RUNNER -----------------
+# ----------------- MAIN RUNNER (OPTIMIZED FOR 10-15+ PARALLEL USERS) -----------------
 if __name__ == "__main__":
     application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
-        .connect_timeout(60.0)
-        .read_timeout(60.0)
-        .write_timeout(60.0)
-        .pool_timeout(60.0)
+        .concurrent_updates(True)      # Enables true multi-threaded parallel handling
+        .connection_pool_size(30)      # Allows multiple outgoing connections simultaneously
+        .connect_timeout(10.0)         # Fast 10s fallback instead of freezing for 60s
+        .read_timeout(10.0)
+        .write_timeout(10.0)
+        .pool_timeout(5.0)
         .build()
     )
 
@@ -1162,5 +1205,5 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
     application.add_error_handler(error_handler)
 
-    logging.info("Bot is active and running 24/7...")
+    logging.info("Optimized high-concurrency bot running 24/7...")
     application.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
