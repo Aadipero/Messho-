@@ -23,6 +23,9 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "8423151783"))
 PROOF_CHANNEL = "@provingc"
 PROOF_CHANNEL_URL = "https://t.me/provingc"
 
+# Setup / How To Order Guide Link
+SETUP_GUIDE_URL = "https://t.me/meesho_setup/5"
+
 # GitHub Pages Verification URL
 VERIFY_WEBAPP_URL = "https://aadipero.github.io/device-verify/"
 
@@ -30,10 +33,9 @@ VERIFY_WEBAPP_URL = "https://aadipero.github.io/device-verify/"
 MESSAGE_CONFETTI_EFFECT_ID = "5046509860389126442"
 
 # ----------------- CUSTOM EMOJI IDS -----------------
-# Yahan apni 2 cute emoji IDs daal sakte hain:
 CUSTOM_EMOJI_IDS = {
-    "cute_gift": "5449816553727998023",    # <-- Apni pehli cute emoji ID yahan daalein
-    "cute_star": "5089460564141278042",    # <-- Apni doosri cute emoji ID yahan daalein
+    "cute_gift": "5449816553727998023",
+    "cute_star": "5089460564141278042",
     "ref_link": "5271604874419647061",
     "stats": "5231200819986047254",
     "claim": "5449816553727998023",
@@ -350,6 +352,9 @@ def get_main_keyboard():
             premium_button("👥 ᴍʏ ɴᴇᴛᴡᴏʀᴋ", "my_referrals", "primary", "referrals"),
         ],
         [
+            premium_button("📖 ʜᴏᴡ ᴛᴏ ᴏʀᴅᴇʀ?", "how_to_order", "primary", "cute_star"),
+        ],
+        [
             premium_button("📢 ʟɪᴠᴇ ᴘʀᴏᴏғs ᴄʜᴀɴɴᴇʟ", None, "primary", "channel", url=PROOF_CHANNEL_URL)
         ]
     ])
@@ -653,6 +658,27 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🥺 Opps! Currently Out of Stock!\n\nRestocking updates are posted on our proof channel soon. Stay tuned! 🚀", 
             show_alert=True
         )
+        return
+
+    # How To Order Guide Callback
+    if data == "how_to_order":
+        guide_text = (
+            "╭─ *📖 ʜᴏᴡ ᴛᴏ ᴏʀᴅᴇʀ & sᴇᴛᴜᴘ ɢᴜɪᴅᴇ 📖*\n"
+            "│\n"
+            "│ ✨ *Hey! Full process set-up is posted here:*\n"
+            f"│ 🔗 `{SETUP_GUIDE_URL}`\n"
+            "│\n"
+            "│ • Complete step-by-step tutorial\n"
+            "│ • Free Order Script details\n"
+            "│ • 24/7 Support instructions\n"
+            "╰───────────────────────────\n\n"
+            "👉 *Click the button below to view the official guide post:*"
+        )
+        guide_kb = InlineKeyboardMarkup([
+            [premium_button("👉 ᴏᴘᴇɴ sᴇᴛᴜᴘ ɢᴜɪᴅᴇ", None, "success", "cute_star", url=SETUP_GUIDE_URL)],
+            [premium_button("🔙 ʙᴀᴄᴋ ᴛᴏ ᴍᴀɪɴ", "back_to_main", None, "repeat")]
+        ])
+        await edit_premium(query.message, guide_text, reply_markup=guide_kb, disable_web_page_preview=True)
         return
 
     await query.answer()
@@ -1048,7 +1074,11 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     pass
             await reply_premium(update.message, f"✅ Broadcast delivered to `{sent}` users.", reply_markup=get_admin_keyboard())
 
-# ----------------- MAIN RUNNER -----------------
+# ----------------- ERROR HANDLER FOR 24/7 RUNTIME -----------------
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logging.error(msg="Exception while handling an update:", exc_info=context.error)
+
+# ----------------- MAIN RUNNER (24/7 AUTO RECONNECT) -----------------
 if __name__ == "__main__":
     application = (
         ApplicationBuilder()
@@ -1065,6 +1095,7 @@ if __name__ == "__main__":
     application.add_handler(ChatJoinRequestHandler(track_join_request))
     application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
+    application.add_error_handler(error_handler)
 
-    logging.info("Bot is active and running...")
-    application.run_polling(drop_pending_updates=True)
+    logging.info("Bot is active and running 24/7 on Railway...")
+    application.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
